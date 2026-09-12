@@ -8,9 +8,9 @@ It reads the same delimited-text exports and the same 10-character ArchSurv poin
 
 ---
 
-## What is ArchSurv4QGIS Synthesis?
+## What is ArchSurv?
 
-AS4QGIS Synthesis works on the basis of point data exported as delimited text from a surveying device. It processes 10-character pointID-strings, e.g. `0001A03001`:
+ArchSurv works on the basis of point data exported as delimited text from a surveying device. It processes 10-character pointID-strings, e.g. `0001A03001`:
 
 - feature `0001`
 - line container / point property `A`

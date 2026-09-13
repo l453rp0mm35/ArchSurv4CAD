@@ -1,6 +1,6 @@
 # AS4CAD
 
-**ArchSurv4CAD** (**AS4CAD**) is an open source AutoLISP port of the [ArchSurv4QGIS (AS4QGIS)](https://github.com/l453rp0mm35/ArchSurv4QGIS) **Synthesis** workflow, bringing automated archaeological feature drawing directly into AutoCAD and BricsCAD - no QGIS round-trip required to get from a raw total-station/GNSS export to classified, attributed, styled CAD geometry.
+**AS4CAD** is an open source AutoLISP port of the [ArchSurv4QGIS (AS4QGIS)](https://github.com/l453rp0mm35/ArchSurv4QGIS) **Synthesis** workflow, bringing automated archaeological feature drawing directly into AutoCAD and BricsCAD - no QGIS round-trip required to get from a raw total-station/GNSS export to classified, attributed, styled CAD geometry.
 
 It reads the same delimited-text exports and the same 10-character ArchSurv point-ID scheme as AS4QGIS Synthesis, and builds a fully classified drawing: points as styled, attributed block symbols; lines and polygons as true 3D geometry; posthole buffers as generated circles; everything carrying the same attribute set AS4QGIS would produce, stored both as Xdata and as visible/editable block attributes.
 
@@ -114,6 +114,7 @@ AS4CAD uses only standard AutoLISP and core Visual LISP functions - no ActiveX/C
 3. Optionally run `AS4SETLAYER`, `AS4SETSYMBOL`, `AS4SETTEXT`, `AS4SETVECTOR` to configure the drawing to your liking - or just skip this and use the factory defaults.
 4. Run `AS4IMPORT`, select your delimited text file (`.csv`/`.txt`/`.asc`, any of tab/semicolon/comma as separator, auto-detected).
 5. Review the command-line summary (features imported per shape type, skipped/invalid lines, split shpcontainers, feature layer count).
+6. Optionally, run `AS4POINTEXPORTCSV` at any point to write the point data back out as CSV.
 
 ---
 
@@ -200,6 +201,16 @@ Resets every AS4SETLAYER/AS4SETSYMBOL/AS4SETTEXT/AS4SETVECTOR setting to its fac
 ### `AS4STATUS`
 
 Prints the AS4CAD version and every current setting to the command line.
+
+### `AS4POINTEXPORTCSV`
+
+Writes point symbols back out as a CSV file - the reverse direction, for bringing AS4CAD-generated points back into QGIS (or any other tool that reads a delimited text file) via "Add Delimited Text Layer".
+
+- **Selection:** pick objects first to export only those; press Enter with nothing selected to export every point symbol in the drawing instead.
+- **Reads actual block attribute values**, not a fresh recomputation from point_ID - so any manual correction made in the Properties palette after import is reflected in the export.
+- Line/polygon vertex markers (`as4_vertices`) are always excluded - only true point-data symbols (fixed/station/sample/find/height/3D-marker/section-nail) are written out.
+- `maxH`/`minH` are aggregated across whatever was exported in that run - if you export a partial selection, the range reflects the selection, not necessarily the whole feature.
+- Columns: `ID, code, shptype_n, shptype, point-prop, find-nr., sample-nr., f_ma/s_me, contin-nr., point-ID, x, y, z, maxH, minH, maxHtemp, minHtemp, originfile, of_epsg, IDstring, ID_code, code_ID` - the same set AS4QGIS Synthesis produces for its `pointdata` output, with `maxHtemp`/`minHtemp` recomputed fresh using the same pseudo-date formula.
 
 ---
 

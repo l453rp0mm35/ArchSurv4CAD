@@ -1,6 +1,6 @@
 # AS4CAD
 
-**AS4CAD** is an open source AutoLISP port of the [ArchSurv4QGIS (AS4QGIS)](https://github.com/l453rp0mm35/ArchSurv4QGIS) **Synthesis** workflow, bringing automated archaeological feature drawing directly into AutoCAD and BricsCAD - no QGIS round-trip required to get from a raw total-station/GNSS export to classified, attributed, styled CAD geometry.
+**AS4CAD** is an open source AutoLISP port of the [ArchSurv4QGIS (AS4QGIS)]([https://github.com/](https://github.com/l453rp0mm35/ArchSurv4QGIS)) **Synthesis** workflow, bringing automated archaeological feature drawing directly into AutoCAD and BricsCAD - no QGIS round-trip required to get from a raw total-station/GNSS export to classified, attributed, styled CAD geometry.
 
 It reads the same delimited-text exports and the same 10-character ArchSurv point-ID scheme as AS4QGIS Synthesis, and builds a fully classified drawing: points as styled, attributed block symbols; lines and polygons as true 3D geometry; posthole buffers as generated circles; everything carrying the same attribute set AS4QGIS would produce, stored both as Xdata and as visible/editable block attributes.
 
@@ -114,7 +114,8 @@ AS4CAD uses only standard AutoLISP and core Visual LISP functions - no ActiveX/C
 3. Optionally run `AS4SETLAYER`, `AS4SETSYMBOL`, `AS4SETTEXT`, `AS4SETVECTOR` to configure the drawing to your liking - or just skip this and use the factory defaults.
 4. Run `AS4IMPORT`, select your delimited text file (`.csv`/`.txt`/`.asc`, any of tab/semicolon/comma as separator, auto-detected).
 5. Review the command-line summary (features imported per shape type, skipped/invalid lines, split shpcontainers, feature layer count).
-6. Optionally, run `AS4POINTEXPORTCSV` at any point to write the point data back out as CSV.
+6. Use `AS4ZOOM`/`AS4SELECT`/`AS4SELECTMULTI` any time afterward to jump straight to a feature by its ID or code.
+7. Optionally, run `AS4POINTEXPORTCSV` at any point to write the point data back out as CSV.
 
 ---
 
@@ -142,15 +143,16 @@ Re-imports a file without duplicating geometry: removes every object previously 
 
 Controls where geometry ends up, layer-wise. Asks:
 
-1. **Which field names the per-feature layer** - `IDnum` (plain ID, e.g. `4`), `IDstr` (padded, e.g. `0004`), `IDnumCode`/`IDstrCode` (ID+code), `CodeIDnum`/`CodeIDstr` (code+ID).
-2. For each of six point categories (**heights**, **samples**, **finds**, **3D markers**, **section nails**, **fixed points**), one of four placement modes:
+1. **Which field names the per-feature layer** - `IDnum` (plain ID, e.g. `4`), `IDstr` (padded, e.g. `0004`), `IDnumCode`/`IDstrCode` (ID+code), `CodeIDnum`/`CodeIDstr` (code+ID). This choice also decides which "flavour" of plain ID (unpadded number, or padded string) gets used below in modes A/B/E - always without the code, even if this field itself includes one.
+2. For each of six point categories (**heights**, **samples**, **finds**, **3D markers**, **section nails**, **fixed points**), one of four placement modes (samples and finds get a fifth):
 
-| Mode | Effect | Example (heights, feature layer `0193`) |
+| Mode | Effect | Example (heights, feature `193`, `IDnum` selected) |
 |---|---|---|
-| A | own layer, category-prefixed | `as4_heights_0193` |
-| B | own layer, category-suffixed | `0193_heights` |
-| C | shares the feature's own layer | `0193` |
+| A | own layer, category-prefixed | `as4_heights_193` |
+| B | own layer, category-suffixed | `193_heights` |
+| C | shares the feature's own layer | `193` (or whatever field #1 produced) |
 | D | one collective layer for the whole category | `as4_heights` |
+| E *(samples/finds only)* | one layer per individual measurement | `as4_find-37_193` (running number `37`) |
 
 Defaults: heights = C, samples/finds/3D-markers/section-nails = B, fixed points = D.
 
@@ -212,6 +214,21 @@ Writes point symbols back out as a CSV file - the reverse direction, for bringin
 - `maxH`/`minH` are aggregated across whatever was exported in that run - if you export a partial selection, the range reflects the selection, not necessarily the whole feature.
 - Columns: `ID, code, shptype_n, shptype, point-prop, find-nr., sample-nr., f_ma/s_me, contin-nr., point-ID, x, y, z, maxH, minH, maxHtemp, minHtemp, originfile, of_epsg, IDstring, ID_code, code_ID` - the same set AS4QGIS Synthesis produces for its `pointdata` output, with `maxHtemp`/`minHtemp` recomputed fresh using the same pseudo-date formula.
 
+### `AS4ZOOM` / `AS4SELECT` / `AS4SELECTMULTI`
+
+Locate objects by feature ID or code, instead of hunting through layers - matched directly against every object's own block attribute/Xdata, so it works regardless of the current `AS4SETLAYER` configuration and finds point symbols *and* lines/polygons alike.
+
+- Enter a plain integer (e.g. `40`) to match by **ID**, or any other text (e.g. `VF`) to match by **code** (case-insensitive).
+- `AS4ZOOM` zooms to the combined bounding box of everything found. `AS4SELECT` does the same and also selects the found objects. `AS4SELECTMULTI` accepts a comma-separated mix of IDs and codes at once (e.g. `4,12,VF,FUND`) and matches anything satisfying *any* of them.
+- The confirmation line reports a breakdown, e.g. `(3 point symbol(s), 1 line/polygon(s))`.
+
+### `AS4NET` / `AS4NETTXT`
+
+A reference survey grid, and coordinate labels for any selected points.
+
+- **`AS4NET`**: pick two corners of the area to cover, then a spacing in metres (e.g. `10` for a 10×10 m grid) and a Z elevation. Places a small cross at every grid intersection that falls on a round coordinate (a multiple of the spacing) within that window, on a dedicated `as4_survey-grid` layer.
+- **`AS4NETTXT`**: select any points (grid crosses, or anything else with a usable insertion point - symbols, circles, plain AutoCAD points) and writes their coordinates next to them as two separate texts on `as4_txt_survey-grid` - `X=...` horizontal, `Y=...` rotated 90° - matching the conventional layout of printed survey grid coordinate labels.
+
 ---
 
 ## Settings & persistence
@@ -229,6 +246,7 @@ Every AS4CAD-managed layer starts with the prefix `as4_`, so they sort together 
 - **`as4_vertices`** - a small marker (block reference) at every measured point that forms part of a line or polygon
 - **`as4_station`**, **`as4_section-nails`**, **`as4_fixed-points`** - fixed layers for those symbol types (unless reassigned via `AS4SETLAYER`)
 - **`as4_trench_<code>`** - trench boundary lines/polygons, grouped by the code field
+- **`as4_survey-grid`** / **`as4_txt_survey-grid`** - reference grid crosses (`AS4NET`) and their coordinate labels (`AS4NETTXT`)
 - **`as4_txt_*`** - one label layer per symbol type (`as4_txt_heights`, `as4_txt_samples`, `as4_txt_finds`, `as4_txt_3d-markers`, `as4_txt_section-nails`, `as4_txt_fixed-points`, `as4_txt_station`) plus `as4_txt_ID`, a single "ID" label placed once per feature layer
 
 Point symbols carry a visible **`LABEL`** attribute (running number, or a short prefixed label for fixed/sample/find/3D-marker/section-nail points) plus a set of invisible attributes (`ID`, `IDSTRING`, `CODE`, `SHPTYPE`, `SHPTYPE_N`, `POINT_PROP`, `CONTIN_NR`, `ID_CODE`, `CODE_ID`, `ORIGINFILE`, and `F_MA_S_ME` for samples/finds) - all visible and editable in the standard Properties palette under **Attributes**.

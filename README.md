@@ -4,7 +4,9 @@
 
 It reads the same delimited-text exports and the same 10-character ArchSurv point-ID scheme as AS4QGIS Synthesis, and builds a fully classified drawing: points as styled, attributed block symbols; lines and polygons as true 3D geometry; posthole buffers as generated circles; everything carrying the same attribute set AS4QGIS would produce, stored both as Xdata and as visible/editable block attributes.
 
-> AS4CAD covers the **Synthesis** side of the AS4QGIS suite (point data → classified drawing). It does not currently include a Psyche-equivalent (adding AS4QGIS-style attributes to pre-existing CAD lines/polygons).
+> AS4CAD covers the **Synthesis** side of the AS4QGIS suite (point data → classified drawing). `AS4TAGFROMLAYER` additionally covers the same ground as AS4QGIS's **Psyche** - adding the same attribute structure to pre-existing line/polygon geometry - though it derives the ID/code from the object's layer name rather than a point measurement.
+
+Free, source-available tooling matters in archaeology as much as in any other publicly funded science: excavation budgets rarely include commercial GIS/CAD-automation licenses, students and volunteer diggers need to be able to run the same workflow their supervisor uses without a paywall in the way, and results built on an openly inspectable pipeline are easier for anyone else to verify, adapt, or build on. AS4QGIS and AS4CAD are released under the MIT license specifically so that any excavation, institution or individual researcher can use, modify and redistribute them freely.
 
 ---
 
@@ -111,15 +113,17 @@ AS4CAD uses only standard AutoLISP and core Visual LISP functions - no ActiveX/C
 
 1. Load `AS4CAD.lsp` (see above).
 2. Save your drawing at least once, so project-level settings have somewhere to live (see [Settings & persistence](#settings--persistence)).
-3. Optionally run `AS4SETLAYER`, `AS4SETSYMBOL`, `AS4SETTEXT`, `AS4SETVECTOR` to configure the drawing to your liking - or just skip this and use the factory defaults.
+3. Optionally run `AS4SETLAYER`, `AS4SETSYMBOL`, `AS4SETTEXT`, `AS4SETVECTOR`, `AS4SETXPORT` to configure the drawing to your liking - or just skip this and use the factory defaults.
 4. Run `AS4IMPORT`, select your delimited text file (`.csv`/`.txt`/`.asc`, any of tab/semicolon/comma as separator, auto-detected).
 5. Review the command-line summary (features imported per shape type, skipped/invalid lines, split shpcontainers, feature layer count).
 6. Use `AS4ZOOM`/`AS4SELECT`/`AS4SELECTMULTI` any time afterward to jump straight to a feature by its ID or code.
-7. Optionally, run `AS4POINTEXPORTCSV` at any point to write the point data back out as CSV.
+7. Optionally, run `AS4XPORTPOINTDATACSV` or `AS4XPORTGISGEOJSON` at any point to export the data back out for QGIS or any other GIS tool.
 
 ---
 
 ## Commands
+
+Run `AS4INFO` at any time for a command-line reference of every command below: it lists them all with a letter, then prints a short usage/effect description for whichever letter you type.
 
 ### `AS4IMPORT`
 
@@ -196,23 +200,48 @@ Color (ACI, `0` = ByLayer/no override) and lineweight (mm, `0` = ByLayer/no over
 
 Entering `0` clears an override back to ByLayer - new geometry on that layer then simply takes on the layer's own assigned color/lineweight. Turns on lineweight display (`LWDISPLAY`) automatically, since AutoCAD/BricsCAD hide lineweights in Model Space by default and the change would otherwise be invisible.
 
+### `AS4SETXPORT`
+
+Default output format for `AS4XPORTPOINTDATACSV` (`Raw`/`Schema`) and default EPSG code for `AS4XPORTGISGEOJSON`, so neither has to be typed on every export - still overridable per run.
+
 ### `AS4SETDEFAULT`
 
-Resets every AS4SETLAYER/AS4SETSYMBOL/AS4SETTEXT/AS4SETVECTOR setting to its factory default, described above.
+Resets every AS4SETLAYER/AS4SETSYMBOL/AS4SETTEXT/AS4SETVECTOR/AS4SETXPORT setting to its factory default, described above.
 
 ### `AS4STATUS`
 
 Prints the AS4CAD version and every current setting to the command line.
 
-### `AS4POINTEXPORTCSV`
+### `AS4XPORTPOINTDATACSV`
 
 Writes point symbols back out as a CSV file - the reverse direction, for bringing AS4CAD-generated points back into QGIS (or any other tool that reads a delimited text file) via "Add Delimited Text Layer".
 
+- **Format:** `Raw` (`point_ID,x,y,z,code`, no header, directly re-importable by `AS4IMPORT`) or `Schema` (the full 21-column AS4QGIS `pointdata` set, with header). Default comes from `AS4SETXPORT`.
 - **Selection:** pick objects first to export only those; press Enter with nothing selected to export every point symbol in the drawing instead.
 - **Reads actual block attribute values**, not a fresh recomputation from point_ID - so any manual correction made in the Properties palette after import is reflected in the export.
-- Line/polygon vertex markers (`as4_vertices`) are always excluded - only true point-data symbols (fixed/station/sample/find/height/3D-marker/section-nail) are written out.
+- Line/polygon vertex markers (`as4_vertices`) and the survey-grid blocks (`AS4_GridCross`) are always excluded - only true point-data symbols (fixed/station/sample/find/height/3D-marker/section-nail) are written out.
 - `maxH`/`minH` are aggregated across whatever was exported in that run - if you export a partial selection, the range reflects the selection, not necessarily the whole feature.
-- Columns: `ID, code, shptype_n, shptype, point-prop, find-nr., sample-nr., f_ma/s_me, contin-nr., point-ID, x, y, z, maxH, minH, maxHtemp, minHtemp, originfile, of_epsg, IDstring, ID_code, code_ID` - the same set AS4QGIS Synthesis produces for its `pointdata` output, with `maxHtemp`/`minHtemp` recomputed fresh using the same pseudo-date formula.
+
+### `AS4XPORTGISGEOJSON`
+
+Exports point symbols **and** lines/polygons together in a single GeoJSON file - geometry and the full AS4QGIS attribute set in one, ready to open directly in QGIS.
+
+- **Auto-tags untagged lines first** (the same logic as `AS4TAGFROMLAYER`, run automatically) so lines/polygons drawn or traced without going through `AS4IMPORT` are included rather than silently dropped.
+- **Points** carry the full 17-field `pointdata` schema; **lines/polygons** carry the leaner 11-field schema AS4QGIS itself produces for those geometry types (no `shptype_n`, `geom_ID`, or point-only fields).
+- Polygons are closed rings (first point duplicated at the end, as GeoJSON requires).
+- **EPSG:** asks each run, defaulting to whatever `AS4SETXPORT` has stored; embedded as a `crs` member (`urn:ogc:def:crs:EPSG::<code>`).
+- **QGIS loads a mixed-geometry GeoJSON as separate Point/LineString/Polygon layers automatically** - if you have AS4QGIS's own `.qml` style files, they can be applied directly to the matching layer (their rule filters key on `shptype`, which matches this export's field names exactly).
+- **qgis2threejs tip:** 3D rendering of non-planar polygons (varying Z per vertex, e.g. a real wall outline) can fail to show elevation correctly when the source is GeoJSON, even though the same geometry renders fine from a Shapefile. This appears to be a GeoJSON-driver/triangulation interaction, not a data problem - if you hit it, use QGIS's "Export → Save Features As" to convert the polygon layer to a Shapefile first.
+
+### `AS4TAGFROMLAYER`
+
+Bulk-tags untagged `POLYLINE` entities (lines drawn manually, or traced over a photogrammetry mesh/orthophoto) with AS4QGIS attributes, parsed from their **layer name** instead of a point_ID - e.g. a layer named `193_VF` or `VF_193` is parsed as ID `193`, code `VF`, matching whichever `AS4SETLAYER` field convention is in use.
+
+- Closed polylines become shape type `03` (polygon); open ones become `02` (polyline).
+- Container letters auto-increment per ID within the batch to avoid `geom_ID` collisions.
+- `originfile` is set to `"manual"`, which protects these objects from `AS4UPDATE`'s file-based cleanup.
+- Shows a dry-run summary (including any layer names it couldn't parse) before asking for confirmation.
+- Layers already prefixed `as4_` are excluded from candidates, since those are AS4CAD's own managed layers.
 
 ### `AS4ZOOM` / `AS4SELECT` / `AS4SELECTMULTI`
 
@@ -221,6 +250,7 @@ Locate objects by feature ID or code, instead of hunting through layers - matche
 - Enter a plain integer (e.g. `40`) to match by **ID**, or any other text (e.g. `VF`) to match by **code** (case-insensitive).
 - `AS4ZOOM` zooms to the combined bounding box of everything found. `AS4SELECT` does the same and also selects the found objects. `AS4SELECTMULTI` accepts a comma-separated mix of IDs and codes at once (e.g. `4,12,VF,FUND`) and matches anything satisfying *any* of them.
 - The confirmation line reports a breakdown, e.g. `(3 point symbol(s), 1 line/polygon(s))`.
+- The search itself is filtered to INSERT/POLYLINE entities before any attribute is read, and AS4CAD's own non-data blocks (`AS4_Vertex`, `AS4_GridCross`) are skipped before their attribute chain is ever walked - so a large `AS4NET` reference grid doesn't slow these commands down.
 
 ### `AS4NET` / `AS4NETTXT`
 
@@ -236,6 +266,8 @@ A reference survey grid, and coordinate labels for any selected points.
 Every `AS4SET*` command writes its choices to a small settings file next to the current drawing (`as4cad_settings.dat`), loaded automatically the next time AS4CAD runs on a drawing from that same folder - so you only configure a project once, not once per session. Each command also offers to save the same choices as a **global default** (`~/.as4cad_settings.dat` in your home directory), used as the starting point for any project that doesn't have settings of its own yet.
 
 If the drawing has never been saved, or the home directory can't be determined, saving at that level is silently skipped - the rest of the command still runs normally.
+
+Every AS4CAD prompt is deliberately kept in English regardless of your AutoCAD/BricsCAD interface language, using the `_.`-prefixed, language-independent form of every underlying command. Yes/No prompts accept either the full word or the English abbreviation (`Y`/`N`) - not `J`/`Ja`/`Nein`, so an answer is never ambiguous between the two languages.
 
 ---
 

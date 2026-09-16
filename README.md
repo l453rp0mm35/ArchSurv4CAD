@@ -113,11 +113,11 @@ AS4CAD uses only standard AutoLISP and core Visual LISP functions - no ActiveX/C
 
 1. Load `AS4CAD.lsp` (see above).
 2. Save your drawing at least once, so project-level settings have somewhere to live (see [Settings & persistence](#settings--persistence)).
-3. Optionally run `AS4SETLAYER`, `AS4SETSYMBOL`, `AS4SETTEXT`, `AS4SETVECTOR`, `AS4SETXPORT` to configure the drawing to your liking - or just skip this and use the factory defaults.
+3. Optionally run `AS4SETTINGS` to configure the drawing to your liking - or just skip this and use the factory defaults.
 4. Run `AS4IMPORT`, select your delimited text file (`.csv`/`.txt`/`.asc`, any of tab/semicolon/comma as separator, auto-detected).
 5. Review the command-line summary (features imported per shape type, skipped/invalid lines, split shpcontainers, feature layer count).
-6. Use `AS4ZOOM`/`AS4SELECT`/`AS4SELECTMULTI` any time afterward to jump straight to a feature by its ID or code.
-7. Optionally, run `AS4XPORTPOINTDATACSV` or `AS4XPORTGISGEOJSON` at any point to export the data back out for QGIS or any other GIS tool.
+6. Use `AS4ZOOM`/`AS4SELECT` any time afterward to jump straight to a feature by its ID or code.
+7. Optionally, run `AS4XPORT` at any point to export the data back out for QGIS or any other GIS tool.
 
 ---
 
@@ -143,7 +143,15 @@ Reads an ArchSurv delimited text file and builds the classified drawing.
 
 Re-imports a file without duplicating geometry: removes every object previously imported from *that same file* (matched via the `originfile` attribute), then runs `AS4IMPORT` again. Use this when re-running a corrected/updated export instead of `AS4IMPORT`.
 
-### `AS4SETLAYER`
+### `AS4SETTINGS`
+
+The only entry point for configuring AS4CAD - a menu with six steps. Type the first letter shown to jump to that step, as many times as needed, in any order, until `X`/eXit:
+
+```
+AS4CAD settings [Layerstructure/Vector/Symbol/Text/Export/Default/eXit] <eXit>:
+```
+
+#### Layerstructure
 
 Controls where geometry ends up, layer-wise. Asks:
 
@@ -162,7 +170,7 @@ Defaults: heights = C, samples/finds/3D-markers/section-nails = B, fixed points 
 
 Trench boundaries (`92`/`93`) always go to a fixed `as4_trench_<code>` layer regardless of this setting, since they are excavation-wide rather than per-feature.
 
-### `AS4SETSYMBOL`
+#### Symbol
 
 Vertex marker radius, point symbol scale, and - for the five customizable symbol types (**fixed point**, **station**, **sample**, **find**, **3D marker**) - shape, center marker and colors:
 
@@ -182,11 +190,11 @@ Height points and section nails are not covered here - their designs (apex-at-co
 | Find | Circle | X | light blue (true color) | white |
 | 3D marker | Circle | X | magenta | white |
 
-### `AS4SETTEXT`
+#### Text
 
 Label text height and ACI color for all seven labelled symbol types (fixed point, station, sample, find, height, 3D marker, section nail). Height defaults to a smaller size (0.04) to match its deliberately small symbol; all others default to 0.08. Text colors default to matching each symbol's own shape color.
 
-### `AS4SETVECTOR`
+#### Vector
 
 Color (ACI, `0` = ByLayer/no override) and lineweight (mm, `0` = ByLayer/no override) for the five line/polygon groups:
 
@@ -200,42 +208,51 @@ Color (ACI, `0` = ByLayer/no override) and lineweight (mm, `0` = ByLayer/no over
 
 Entering `0` clears an override back to ByLayer - new geometry on that layer then simply takes on the layer's own assigned color/lineweight. Turns on lineweight display (`LWDISPLAY`) automatically, since AutoCAD/BricsCAD hide lineweights in Model Space by default and the change would otherwise be invisible.
 
-### `AS4SETXPORT`
+#### Export
 
-Default output format for `AS4XPORTPOINTDATACSV` (`Raw`/`Schema`) and default EPSG code for `AS4XPORTGISGEOJSON`, so neither has to be typed on every export - still overridable per run.
+Default output format for `AS4XPORT`'s Csv step (`Raw`/`Schema`) and default EPSG code for its GeoJson step, so neither has to be typed on every export - still overridable per run.
 
-### `AS4SETDEFAULT`
+#### Default
 
-Resets every AS4SETLAYER/AS4SETSYMBOL/AS4SETTEXT/AS4SETVECTOR/AS4SETXPORT setting to its factory default, described above.
+Resets every Layerstructure/Symbol/Text/Vector/Export setting to its factory default, described above.
 
 ### `AS4STATUS`
 
 Prints the AS4CAD version and every current setting to the command line.
 
-### `AS4XPORTPOINTDATACSV`
+### `AS4XPORT`
+
+The only entry point for exporting - a menu with two steps:
+
+```
+AS4CAD export [Csv/GeoJson/eXit] <eXit>:
+```
+
+#### Csv
 
 Writes point symbols back out as a CSV file - the reverse direction, for bringing AS4CAD-generated points back into QGIS (or any other tool that reads a delimited text file) via "Add Delimited Text Layer".
 
-- **Format:** `Raw` (`point_ID,x,y,z,code`, no header, directly re-importable by `AS4IMPORT`) or `Schema` (the full 21-column AS4QGIS `pointdata` set, with header). Default comes from `AS4SETXPORT`.
+- **Format:** `Raw` (`point_ID,x,y,z,code`, no header, directly re-importable by `AS4IMPORT`) or `Schema` (the full 21-column AS4QGIS `pointdata` set, with header). Default comes from `AS4SETTINGS`' Export step.
 - **Selection:** pick objects first to export only those; press Enter with nothing selected to export every point symbol in the drawing instead.
 - **Reads actual block attribute values**, not a fresh recomputation from point_ID - so any manual correction made in the Properties palette after import is reflected in the export.
 - Line/polygon vertex markers (`as4_vertices`) and the survey-grid blocks (`AS4_GridCross`) are always excluded - only true point-data symbols (fixed/station/sample/find/height/3D-marker/section-nail) are written out.
 - `maxH`/`minH` are aggregated across whatever was exported in that run - if you export a partial selection, the range reflects the selection, not necessarily the whole feature.
 
-### `AS4XPORTGISGEOJSON`
+#### GeoJson
 
 Exports point symbols **and** lines/polygons together in a single GeoJSON file - geometry and the full AS4QGIS attribute set in one, ready to open directly in QGIS.
 
 - **Auto-tags untagged lines first** (the same logic as `AS4TAGFROMLAYER`, run automatically) so lines/polygons drawn or traced without going through `AS4IMPORT` are included rather than silently dropped.
 - **Points** carry the full 17-field `pointdata` schema; **lines/polygons** carry the leaner 11-field schema AS4QGIS itself produces for those geometry types (no `shptype_n`, `geom_ID`, or point-only fields).
 - Polygons are closed rings (first point duplicated at the end, as GeoJSON requires).
-- **EPSG:** asks each run, defaulting to whatever `AS4SETXPORT` has stored; embedded as a `crs` member (`urn:ogc:def:crs:EPSG::<code>`).
+- **Mirror polygons to polylines:** asked before the EPSG prompt, defaulting to `No`. Matches AS4QGIS's own "mirror polygons to polylines" option - when set to `Yes`, every polygon feature (shape types `03`/`53`/`61`/`06`/`73`/`93`) is written twice: once as its normal `Polygon` geometry, and once more as an additional `LineString` feature with the same attributes, useful when a GIS workflow needs the boundary as a line (e.g. for separate symbolization) alongside the filled area. Shape type `33` is not affected - it is already exported as a `LineString` in this system, not a `Polygon`, so mirroring it would just duplicate what it already is.
+- **EPSG:** asks each run, defaulting to whatever `AS4SETTINGS`' Export step has stored; embedded as a `crs` member (`urn:ogc:def:crs:EPSG::<code>`).
 - **QGIS loads a mixed-geometry GeoJSON as separate Point/LineString/Polygon layers automatically** - if you have AS4QGIS's own `.qml` style files, they can be applied directly to the matching layer (their rule filters key on `shptype`, which matches this export's field names exactly).
 - **qgis2threejs tip:** 3D rendering of non-planar polygons (varying Z per vertex, e.g. a real wall outline) can fail to show elevation correctly when the source is GeoJSON, even though the same geometry renders fine from a Shapefile. This appears to be a GeoJSON-driver/triangulation interaction, not a data problem - if you hit it, use QGIS's "Export → Save Features As" to convert the polygon layer to a Shapefile first.
 
 ### `AS4TAGFROMLAYER`
 
-Bulk-tags untagged `POLYLINE` entities (lines drawn manually, or traced over a photogrammetry mesh/orthophoto) with AS4QGIS attributes, parsed from their **layer name** instead of a point_ID - e.g. a layer named `193_VF` or `VF_193` is parsed as ID `193`, code `VF`, matching whichever `AS4SETLAYER` field convention is in use.
+Bulk-tags untagged `POLYLINE` entities (lines drawn manually, or traced over a photogrammetry mesh/orthophoto) with AS4QGIS attributes, parsed from their **layer name** instead of a point_ID - e.g. a layer named `193_VF` or `VF_193` is parsed as ID `193`, code `VF`, matching whichever `AS4SETTINGS` Layerstructure field convention is in use.
 
 - Closed polylines become shape type `03` (polygon); open ones become `02` (polyline).
 - Container letters auto-increment per ID within the batch to avoid `geom_ID` collisions.
@@ -243,27 +260,31 @@ Bulk-tags untagged `POLYLINE` entities (lines drawn manually, or traced over a p
 - Shows a dry-run summary (including any layer names it couldn't parse) before asking for confirmation.
 - Layers already prefixed `as4_` are excluded from candidates, since those are AS4CAD's own managed layers.
 
-### `AS4ZOOM` / `AS4SELECT` / `AS4SELECTMULTI`
+### `AS4ZOOM` / `AS4SELECT`
 
-Locate objects by feature ID or code, instead of hunting through layers - matched directly against every object's own block attribute/Xdata, so it works regardless of the current `AS4SETLAYER` configuration and finds point symbols *and* lines/polygons alike.
+Locate objects by feature ID or code, instead of hunting through layers - matched directly against every object's own block attribute/Xdata, so it works regardless of the current `AS4SETTINGS` Layerstructure configuration and finds point symbols *and* lines/polygons alike.
 
-- Enter a plain integer (e.g. `40`) to match by **ID**, or any other text (e.g. `VF`) to match by **code** (case-insensitive).
-- `AS4ZOOM` zooms to the combined bounding box of everything found. `AS4SELECT` does the same and also selects the found objects. `AS4SELECTMULTI` accepts a comma-separated mix of IDs and codes at once (e.g. `4,12,VF,FUND`) and matches anything satisfying *any* of them.
+- Enter a plain integer (e.g. `40`) to match by **ID**, or any other text (e.g. `VF`) to match by **code** (case-insensitive) - or a comma-separated mix of several (e.g. `4,12,VF,FUND`), matching anything satisfying *any* of them.
+- `AS4ZOOM` zooms to the combined bounding box of everything found. `AS4SELECT` does the same and also selects the found objects.
 - The confirmation line reports a breakdown, e.g. `(3 point symbol(s), 1 line/polygon(s))`.
 - The search itself is filtered to INSERT/POLYLINE entities before any attribute is read, and AS4CAD's own non-data blocks (`AS4_Vertex`, `AS4_GridCross`) are skipped before their attribute chain is ever walked - so a large `AS4NET` reference grid doesn't slow these commands down.
 
-### `AS4NET` / `AS4NETTXT`
+### `AS4NET`
 
-A reference survey grid, and coordinate labels for any selected points.
+The only entry point for the reference survey grid - a menu with two steps:
 
-- **`AS4NET`**: pick two corners of the area to cover, then a spacing in metres (e.g. `10` for a 10×10 m grid) and a Z elevation. Places a small cross at every grid intersection that falls on a round coordinate (a multiple of the spacing) within that window, on a dedicated `as4_survey-grid` layer.
-- **`AS4NETTXT`**: select any points (grid crosses, or anything else with a usable insertion point - symbols, circles, plain AutoCAD points) and writes their coordinates next to them as two separate texts on `as4_txt_survey-grid` - `X=...` horizontal, `Y=...` rotated 90° - matching the conventional layout of printed survey grid coordinate labels.
+```
+AS4CAD survey grid [Grid/Label/eXit] <eXit>:
+```
+
+- **Grid**: pick two corners of the area to cover, then a spacing in metres (e.g. `10` for a 10×10 m grid) and a Z elevation. Places a small cross at every grid intersection that falls on a round coordinate (a multiple of the spacing) within that window, on a dedicated `as4_survey-grid` layer.
+- **Label**: select any points (grid crosses, or anything else with a usable insertion point - symbols, circles, plain AutoCAD points) and writes their coordinates next to them as two separate texts on `as4_txt_survey-grid` - `X=...` horizontal, `Y=...` rotated 90° - matching the conventional layout of printed survey grid coordinate labels.
 
 ---
 
 ## Settings & persistence
 
-Every `AS4SET*` command writes its choices to a small settings file next to the current drawing (`as4cad_settings.dat`), loaded automatically the next time AS4CAD runs on a drawing from that same folder - so you only configure a project once, not once per session. Each command also offers to save the same choices as a **global default** (`~/.as4cad_settings.dat` in your home directory), used as the starting point for any project that doesn't have settings of its own yet.
+Every step of `AS4SETTINGS` writes its choices to a small settings file next to the current drawing (`as4cad_settings.dat`), loaded automatically the next time AS4CAD runs on a drawing from that same folder - so you only configure a project once, not once per session. Each step also offers to save the same choices as a **global default** (`~/.as4cad_settings.dat` in your home directory), used as the starting point for any project that doesn't have settings of its own yet.
 
 If the drawing has never been saved, or the home directory can't be determined, saving at that level is silently skipped - the rest of the command still runs normally.
 
@@ -276,9 +297,9 @@ Every AS4CAD prompt is deliberately kept in English regardless of your AutoCAD/B
 Every AS4CAD-managed layer starts with the prefix `as4_`, so they sort together and stay clearly separate from your own project layers:
 
 - **`as4_vertices`** - a small marker (block reference) at every measured point that forms part of a line or polygon
-- **`as4_station`**, **`as4_section-nails`**, **`as4_fixed-points`** - fixed layers for those symbol types (unless reassigned via `AS4SETLAYER`)
+- **`as4_station`**, **`as4_section-nails`**, **`as4_fixed-points`** - fixed layers for those symbol types (unless reassigned via `AS4SETTINGS`' Layerstructure step)
 - **`as4_trench_<code>`** - trench boundary lines/polygons, grouped by the code field
-- **`as4_survey-grid`** / **`as4_txt_survey-grid`** - reference grid crosses (`AS4NET`) and their coordinate labels (`AS4NETTXT`)
+- **`as4_survey-grid`** / **`as4_txt_survey-grid`** - reference grid crosses (`AS4NET`'s Grid step) and their coordinate labels (its Label step)
 - **`as4_txt_*`** - one label layer per symbol type (`as4_txt_heights`, `as4_txt_samples`, `as4_txt_finds`, `as4_txt_3d-markers`, `as4_txt_section-nails`, `as4_txt_fixed-points`, `as4_txt_station`) plus `as4_txt_ID`, a single "ID" label placed once per feature layer
 
 Point symbols carry a visible **`LABEL`** attribute (running number, or a short prefixed label for fixed/sample/find/3D-marker/section-nail points) plus a set of invisible attributes (`ID`, `IDSTRING`, `CODE`, `SHPTYPE`, `SHPTYPE_N`, `POINT_PROP`, `CONTIN_NR`, `ID_CODE`, `CODE_ID`, `ORIGINFILE`, and `F_MA_S_ME` for samples/finds) - all visible and editable in the standard Properties palette under **Attributes**.

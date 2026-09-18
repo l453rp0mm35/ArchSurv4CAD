@@ -129,7 +129,8 @@ Run `AS4INFO` at any time for a command-line reference of every command below: i
 
 Reads an ArchSurv delimited text file and builds the classified drawing.
 
-- **Delimiter auto-detection:** tries tab, then semicolon, then comma; repeated delimiter runs (used by some devices purely for column alignment) are collapsed so they don't shift columns; every field is trimmed.
+- **Delimiter auto-detection:** tries tab, then semicolon, then pipe (`|`), then comma - comma last since it also doubles as the decimal separator in many European locales; repeated delimiter runs (used by some devices purely for column alignment) are collapsed so they don't shift columns; every field is trimmed, including a single matching pair of surrounding double-quotes if the source file quotes its fields (e.g. `"0001A03001"` is read as `0001A03001`).
+- **File picker:** filtered to `.csv`/`.txt`/`.asc`. `getfiled` has no concept of a true multi-entry "Files of type" dropdown (distinct named filters like "All Files"/"CSV Files"/...) - its extension argument is a single string, confirmed both by testing and by Autodesk's own documentation, so this is as close as the dialog can get to "ArchSurv files only": it starts on `.csv`, with `.txt`/`.asc` still reachable by editing the extension box.
 - **Columns:** `point_ID, x, y, z, code`. A 4-column line (no `code`) is accepted and treated as if `code` were `"-"`.
 - **point_ID classification:**
   - A valid 10-character ArchSurv code is parsed and classified per the shape type table above.
@@ -138,10 +139,6 @@ Reads an ArchSurv delimited text file and builds the classified drawing.
 - **Posthole geometry (`61`/`06`):** generates a 32-vertex circular polygon centered on the measured point; diameter from the container letter (`A` = 1 cm ... `Z` = 26 cm). These 32 vertices are synthetic and are not added to the vertices layer.
 - **Duplicate shpcontainers:** if the same feature+container+shape-type combination occurs twice in the file (e.g. two people measuring into the same container on a long day), AS4CAD detects the sequence-number reset and splits the points into separate, independent lines/polygons rather than merging them into one geometry that jumps between the two unrelated point sets. Both measurements are always kept in full.
 - Ends with `ZOOM Extents` and a full command-line summary.
-
-### `AS4UPDATE`
-
-Re-imports a file without duplicating geometry: removes every object previously imported from *that same file* (matched via the `originfile` attribute), then runs `AS4IMPORT` again. Use this when re-running a corrected/updated export instead of `AS4IMPORT`.
 
 ### `AS4SETTINGS`
 
@@ -245,7 +242,7 @@ Exports point symbols **and** lines/polygons together in a single GeoJSON file -
 - **Auto-tags untagged lines first** (the same logic as `AS4TAGFROMLAYER`, run automatically) so lines/polygons drawn or traced without going through `AS4IMPORT` are included rather than silently dropped.
 - **Points** carry the full 17-field `pointdata` schema; **lines/polygons** carry the leaner 11-field schema AS4QGIS itself produces for those geometry types (no `shptype_n`, `geom_ID`, or point-only fields).
 - Polygons are closed rings (first point duplicated at the end, as GeoJSON requires).
-- **Mirror polygons to polylines:** asked before the EPSG prompt, defaulting to `No`. Matches AS4QGIS's own "mirror polygons to polylines" option - when set to `Yes`, every polygon feature (shape types `03`/`53`/`61`/`06`/`73`/`93`) is written twice: once as its normal `Polygon` geometry, and once more as an additional `LineString` feature with the same attributes, useful when a GIS workflow needs the boundary as a line (e.g. for separate symbolization) alongside the filled area. Shape type `33` is not affected - it is already exported as a `LineString` in this system, not a `Polygon`, so mirroring it would just duplicate what it already is.
+- **Mirror polygons to polylines:** asked before the EPSG prompt, defaulting to `No`. Matches AS4QGIS's own "mirror polygons to polylines" option - when set to `Yes`, every polygon feature (shape types `03`/`53`/`61`/`06`/`73`/`93`) is written twice: once as its normal `Polygon` geometry, and once more as an additional, still-closed `LineString` feature (end point = start point, same as the polygon ring) with the same attributes, useful when a GIS workflow needs the boundary as a line (e.g. for separate symbolization) alongside the filled area. Shape type `33` is not affected - it is already exported as a `LineString` in this system, not a `Polygon`, so mirroring it would just duplicate what it already is.
 - **EPSG:** asks each run, defaulting to whatever `AS4SETTINGS`' Export step has stored; embedded as a `crs` member (`urn:ogc:def:crs:EPSG::<code>`).
 - **QGIS loads a mixed-geometry GeoJSON as separate Point/LineString/Polygon layers automatically** - if you have AS4QGIS's own `.qml` style files, they can be applied directly to the matching layer (their rule filters key on `shptype`, which matches this export's field names exactly).
 - **qgis2threejs tip:** 3D rendering of non-planar polygons (varying Z per vertex, e.g. a real wall outline) can fail to show elevation correctly when the source is GeoJSON, even though the same geometry renders fine from a Shapefile. This appears to be a GeoJSON-driver/triangulation interaction, not a data problem - if you hit it, use QGIS's "Export → Save Features As" to convert the polygon layer to a Shapefile first.
@@ -256,7 +253,7 @@ Bulk-tags untagged `POLYLINE` entities (lines drawn manually, or traced over a p
 
 - Closed polylines become shape type `03` (polygon); open ones become `02` (polyline).
 - Container letters auto-increment per ID within the batch to avoid `geom_ID` collisions.
-- `originfile` is set to `"manual"`, which protects these objects from `AS4UPDATE`'s file-based cleanup.
+- `originfile` is set to `"manual"`, marking these objects as not originating from an imported file.
 - Shows a dry-run summary (including any layer names it couldn't parse) before asking for confirmation.
 - Layers already prefixed `as4_` are excluded from candidates, since those are AS4CAD's own managed layers.
 

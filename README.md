@@ -1,12 +1,10 @@
 # AS4CAD
 
-**AS4CAD** is an open source AutoLISP port of the [ArchSurv4QGIS (AS4QGIS)](https://github.com/l453rp0mm35/ArchSurv4QGIS) **Synthesis** workflow, bringing automated archaeological feature drawing directly into AutoCAD and BricsCAD - no QGIS round-trip required to get from a raw total-station/GNSS export to classified, attributed, styled CAD geometry.
+**AS4CAD** is an open source AutoLISP port of the [ArchSurv4QGIS (AS4QGIS)](https://github.com/l453rp0mm35/ArchSurv4QGIS) **Synthesis** workflow, bringing automated archaeological feature drawing directly into AutoCAD and BricsCAD.
 
 It reads the same delimited-text exports and the same 10-character ArchSurv point-ID scheme as AS4QGIS Synthesis, and builds a fully classified drawing: points as styled, attributed block symbols; lines and polygons as true 3D geometry; posthole buffers as generated circles; everything carrying the same attribute set AS4QGIS would produce, stored both as Xdata and as visible/editable block attributes.
 
 > AS4CAD covers the **Synthesis** side of the AS4QGIS suite (point data → classified drawing). `AS4TAGFROMLAYER` additionally covers the same ground as AS4QGIS's **Psyche** - adding the same attribute structure to pre-existing line/polygon geometry - though it derives the ID/code from the object's layer name rather than a point measurement.
-
-Free, source-available tooling matters in archaeology as much as in any other publicly funded science: excavation budgets rarely include commercial GIS/CAD-automation licenses, students and volunteer diggers need to be able to run the same workflow their supervisor uses without a paywall in the way, and results built on an openly inspectable pipeline are easier for anyone else to verify, adapt, or build on. AS4QGIS and AS4CAD are released under the MIT license specifically so that any excavation, institution or individual researcher can use, modify and redistribute them freely.
 
 ---
 
@@ -78,6 +76,25 @@ AS4CAD resolves this table automatically and stores the result in the `f_ma/s_me
 - Use `33` for a closed line that should render as a polyline rather than a polygon.
 - **AS4CAD-specific:** section nail measurements (`00`) sharing the same feature+container are connected into a polyline automatically, in addition to receiving their own point symbol.
 
+### Input file format
+
+What `AS4IMPORT` actually expects, in a nutshell:
+
+- **5 columns, in this exact order:** `point_ID, x, y, z, code`. A 4-column line (no `code`) is also accepted - `code` is then just `"-"`.
+- **No header row needed.** A header row isn't rejected either - it just doesn't match any valid `point_ID` pattern, so it is skipped like any other invalid line (counted in the skip summary, not an error).
+- **Delimiter:** auto-detected - tab, semicolon, pipe (`|`) or comma, whichever splits the line into more than one field first. No need to configure this on export; export in whatever your total station/GNSS receiver already produces.
+- **`point_ID`:** either a 10-character ArchSurv code (see [ArchSurv-code guide](#archsurv-code-guide) above) or a free-form numeric station ID (digits plus `.`/`-`/`_`, e.g. `1.2` or `ST-04`).
+- **`x`/`y`/`z`:** plain numbers, decimal point or comma both work - a comma is explicitly converted before parsing rather than left to the OS/CAD locale, which would otherwise risk silently truncating the value at the comma.
+- **`code`:** free text, no length limit.
+- Fields **may be individually wrapped in double-quotes** (e.g. `"0001A03001"`); AS4CAD strips one matching pair per field before parsing.
+- File extension doesn't matter functionally - `.csv`, `.txt`, `.asc` or anything else all parse identically as long as the columns above are right.
+
+Example line (tab-delimited, no header):
+
+```
+0037A03005	-54355.252	363976.921	203.577	VF
+```
+
 ---
 
 ## Installation
@@ -129,20 +146,20 @@ Run `AS4INFO` at any time for a command-line reference of every command below: i
 
 Reads an ArchSurv delimited text file and builds the classified drawing.
 
-- **Delimiter auto-detection:** tries tab, then semicolon, then pipe (`|`), then comma - comma last since it also doubles as the decimal separator in many European locales; repeated delimiter runs (used by some devices purely for column alignment) are collapsed so they don't shift columns; every field is trimmed, including a single matching pair of surrounding double-quotes if the source file quotes its fields (e.g. `"0001A03001"` is read as `0001A03001`).
-- **File picker:** filtered to `.csv`/`.txt`/`.asc`. `getfiled` has no concept of a true multi-entry "Files of type" dropdown (distinct named filters like "All Files"/"CSV Files"/...) - its extension argument is a single string, confirmed both by testing and by Autodesk's own documentation, so this is as close as the dialog can get to "ArchSurv files only": it starts on `.csv`, with `.txt`/`.asc` still reachable by editing the extension box.
+- **Delimiter auto-detection:** tries tab, then semicolon, then pipe (`|`), then comma; repeated delimiter runs (used by some devices purely for column alignment) are collapsed so they don't shift columns; every field is trimmed, including a single matching pair of surrounding double-quotes if the source file quotes its fields (e.g. `"0001A03001"` is read as `0001A03001`).
+- **File picker:** `.csv`, `.txt` and `.asc` are the allowed file formats, selectable in the file picker.
 - **Columns:** `point_ID, x, y, z, code`. A 4-column line (no `code`) is accepted and treated as if `code` were `"-"`.
 - **point_ID classification:**
   - A valid 10-character ArchSurv code is parsed and classified per the shape type table above.
-  - A point_ID that is *not* a valid ArchSurv code, but consists only of digits plus at least one of `.` `-` `_`, is treated as a **station point** (e.g. a total-station backsight/orientation coordinate) and gets its own symbol automatically.
+  - If a point_ID is not a valid ArchSurv code, but consists only of digits plus at least one of `.` `-` `_`, it is treated as a **station point** (e.g. a total-station backsight/orientation coordinate) and gets its own symbol automatically.
   - Anything else (wrong length, unrecognized shape type code, too few columns) is skipped and reported, both immediately on the command line and in a summary at the end.
-- **Posthole geometry (`61`/`06`):** generates a 32-vertex circular polygon centered on the measured point; diameter from the container letter (`A` = 1 cm ... `Z` = 26 cm). These 32 vertices are synthetic and are not added to the vertices layer.
-- **Duplicate shpcontainers:** if the same feature+container+shape-type combination occurs twice in the file (e.g. two people measuring into the same container on a long day), AS4CAD detects the sequence-number reset and splits the points into separate, independent lines/polygons rather than merging them into one geometry that jumps between the two unrelated point sets. Both measurements are always kept in full.
+- **Posthole geometry (`61`/`06`):** generates a 32-vertex circular polygon centered on the measured point; diameter from the container letter (`A` = 1 cm ... `Z` = 26 cm).
+- **Duplicate shpcontainers:** if the same feature+container+shape-type combination occurs twice in the file (e.g. two people measuring into the same container on a long day, `0001A03...` appearing, ending, then starting over from sequence `001` again), AS4CAD detects the sequence-number reset and splits the points into separate, independent lines/polygons rather than merging them into one geometry that jumps between the two unrelated point sets. Both measurements are always kept in full.
 - Ends with `ZOOM Extents` and a full command-line summary.
 
 ### `AS4SETTINGS`
 
-The only entry point for configuring AS4CAD - a menu with six steps. Type the first letter shown to jump to that step, as many times as needed, in any order, until `X`/eXit:
+The entry point for configuring AS4CAD - a menu with six steps. Type the first letter shown to jump to that step, as many times as needed, in any order, until `X`/eXit:
 
 ```
 AS4CAD settings [Layerstructure/Vector/Symbol/Text/Export/Default/eXit] <eXit>:
@@ -152,8 +169,8 @@ AS4CAD settings [Layerstructure/Vector/Symbol/Text/Export/Default/eXit] <eXit>:
 
 Controls where geometry ends up, layer-wise. Asks:
 
-1. **Which field names the per-feature layer** - `IDnum` (plain ID, e.g. `4`), `IDstr` (padded, e.g. `0004`), `IDnumCode`/`IDstrCode` (ID+code), `CodeIDnum`/`CodeIDstr` (code+ID). This choice also decides which "flavour" of plain ID (unpadded number, or padded string) gets used below in modes A/B/E - always without the code, even if this field itself includes one.
-2. For each of six point categories (**heights**, **samples**, **finds**, **3D markers**, **section nails**, **fixed points**), one of four placement modes (samples and finds get a fifth):
+1. **Which field names the per-feature layer** - `IDnum` (plain ID, e.g. `4`), `IDstr` (padded, e.g. `0004`), `IDnumCode`/`IDstrCode` (ID+code), `CodeIDnum`/`CodeIDstr` (code+ID).
+2. For each of six point categories (heights, samples, finds, 3D markers, section nails, fixed points), one of a set of placement modes:
 
 | Mode | Effect | Example (heights, feature `193`, `IDnum` selected) |
 |---|---|---|
@@ -219,7 +236,7 @@ Prints the AS4CAD version and every current setting to the command line.
 
 ### `AS4XPORT`
 
-The only entry point for exporting - a menu with two steps:
+The entry point for exporting - a menu with two steps:
 
 ```
 AS4CAD export [Csv/GeoJson/eXit] <eXit>:
@@ -227,9 +244,9 @@ AS4CAD export [Csv/GeoJson/eXit] <eXit>:
 
 #### Csv
 
-Writes point symbols back out as a CSV file - the reverse direction, for bringing AS4CAD-generated points back into QGIS (or any other tool that reads a delimited text file) via "Add Delimited Text Layer".
+Writes point symbols back out as a CSV file.
 
-- **Format:** `Raw` (`point_ID,x,y,z,code`, no header, directly re-importable by `AS4IMPORT`) or `Schema` (the full 21-column AS4QGIS `pointdata` set, with header). Default comes from `AS4SETTINGS`' Export step.
+- **Format:** `Raw` (`point_ID,x,y,z,code`, no header, directly re-importable by `AS4IMPORT`) or `Schema` (the full 22-column AS4QGIS `pointdata` set, with header). Default comes from `AS4SETTINGS`' Export step.
 - **Selection:** pick objects first to export only those; press Enter with nothing selected to export every point symbol in the drawing instead.
 - **Reads actual block attribute values**, not a fresh recomputation from point_ID - so any manual correction made in the Properties palette after import is reflected in the export.
 - Line/polygon vertex markers (`as4_vertices`) and the survey-grid blocks (`AS4_GridCross`) are always excluded - only true point-data symbols (fixed/station/sample/find/height/3D-marker/section-nail) are written out.
@@ -240,9 +257,9 @@ Writes point symbols back out as a CSV file - the reverse direction, for bringin
 Exports point symbols **and** lines/polygons together in a single GeoJSON file - geometry and the full AS4QGIS attribute set in one, ready to open directly in QGIS.
 
 - **Auto-tags untagged lines first** (the same logic as `AS4TAGFROMLAYER`, run automatically) so lines/polygons drawn or traced without going through `AS4IMPORT` are included rather than silently dropped.
-- **Points** carry the full 17-field `pointdata` schema; **lines/polygons** carry the leaner 11-field schema AS4QGIS itself produces for those geometry types (no `shptype_n`, `geom_ID`, or point-only fields).
+- **Points** carry an 18-field `pointdata` schema - the same 22 columns as the Csv Schema export, minus `x`/`y`/`z` (already in the feature's `geometry`) and `of_epsg` (stated once for the whole file, see EPSG below). **Lines/polygons** carry the leaner 11-field schema AS4QGIS itself produces for those geometry types (no `shptype_n`, `geom_ID`, or point-only fields).
 - Polygons are closed rings (first point duplicated at the end, as GeoJSON requires).
-- **Mirror polygons to polylines:** asked before the EPSG prompt, defaulting to `No`. Matches AS4QGIS's own "mirror polygons to polylines" option - when set to `Yes`, every polygon feature (shape types `03`/`53`/`61`/`06`/`73`/`93`) is written twice: once as its normal `Polygon` geometry, and once more as an additional, still-closed `LineString` feature (end point = start point, same as the polygon ring) with the same attributes, useful when a GIS workflow needs the boundary as a line (e.g. for separate symbolization) alongside the filled area. Shape type `33` is not affected - it is already exported as a `LineString` in this system, not a `Polygon`, so mirroring it would just duplicate what it already is.
+- **Mirror polygons to polylines:** asked before the EPSG prompt, defaulting to `No`. When set to `Yes`, every polygon feature (shape types `03`/`53`/`61`/`06`/`73`/`93`) is written twice: once as its normal `Polygon` geometry, and once more as an additional, still-closed `LineString` feature with the same attributes. Shape type `33` is not affected - it is already exported as a `LineString` in this system, not a `Polygon`.
 - **EPSG:** asks each run, defaulting to whatever `AS4SETTINGS`' Export step has stored; embedded as a `crs` member (`urn:ogc:def:crs:EPSG::<code>`).
 - **QGIS loads a mixed-geometry GeoJSON as separate Point/LineString/Polygon layers automatically** - if you have AS4QGIS's own `.qml` style files, they can be applied directly to the matching layer (their rule filters key on `shptype`, which matches this export's field names exactly).
 - **qgis2threejs tip:** 3D rendering of non-planar polygons (varying Z per vertex, e.g. a real wall outline) can fail to show elevation correctly when the source is GeoJSON, even though the same geometry renders fine from a Shapefile. This appears to be a GeoJSON-driver/triangulation interaction, not a data problem - if you hit it, use QGIS's "Export → Save Features As" to convert the polygon layer to a Shapefile first.
@@ -268,7 +285,7 @@ Locate objects by feature ID or code, instead of hunting through layers - matche
 
 ### `AS4NET`
 
-The only entry point for the reference survey grid - a menu with two steps:
+The entry point for the reference survey grid - a menu with two steps:
 
 ```
 AS4CAD survey grid [Grid/Label/eXit] <eXit>:
@@ -285,8 +302,6 @@ Every step of `AS4SETTINGS` writes its choices to a small settings file next to 
 
 If the drawing has never been saved, or the home directory can't be determined, saving at that level is silently skipped - the rest of the command still runs normally.
 
-Every AS4CAD prompt is deliberately kept in English regardless of your AutoCAD/BricsCAD interface language, using the `_.`-prefixed, language-independent form of every underlying command. Yes/No prompts accept either the full word or the English abbreviation (`Y`/`N`) - not `J`/`Ja`/`Nein`, so an answer is never ambiguous between the two languages.
-
 ---
 
 ## What gets created
@@ -301,15 +316,32 @@ Every AS4CAD-managed layer starts with the prefix `as4_`, so they sort together 
 
 Point symbols carry a visible **`LABEL`** attribute (running number, or a short prefixed label for fixed/sample/find/3D-marker/section-nail points) plus a set of invisible attributes (`ID`, `IDSTRING`, `CODE`, `SHPTYPE`, `SHPTYPE_N`, `POINT_PROP`, `CONTIN_NR`, `ID_CODE`, `CODE_ID`, `ORIGINFILE`, and `F_MA_S_ME` for samples/finds) - all visible and editable in the standard Properties palette under **Attributes**.
 
-Lines and polygons use true 3D `POLYLINE` entities (not `LWPOLYLINE`, which can't carry a different elevation per vertex) and carry the same attribute set as Xdata under the APPID `AS4QGIS` (`ID`, `IDstring`, `code`, `shptype`, `shptype_n`, `geom_ID`, `ID_code`, `code_ID`, `maxH`, `minH`, `originfile`) - block attributes only exist on block references, so this is Xdata-only for line/polygon geometry.
+Lines and polygons use true 3D `POLYLINE` entities and carry the same attribute set as Xdata under the APPID `AS4QGIS` (`ID`, `IDstring`, `code`, `shptype`, `shptype_n`, `geom_ID`, `ID_code`, `code_ID`, `maxH`, `minH`, `originfile`) - block attributes only exist on block references, so this is Xdata-only for line/polygon geometry.
 
 ---
 
 ## About this project
 
+### Origin of the point-ID scheme
+
+The 10-character point-ID string predates AS4QGIS and AS4CAD. It has been in use since the 2010s across eastern Austria for spatial recording, via ArchServ, an aging CAD plugin written by R. Thoma. AS4QGIS and AS4CAD keep the same point-ID string so that field archaeologists do not have to learn a new coding scheme, and so that existing raw survey data stays usable with the current tools.
+
+### FOSS
+
+Spatial recording is a routine, everyday task in archaeological fieldwork. It should be accessible to every colleague in the field, not reserved for those whose institution or firm can afford a proprietary software license - the quality of a survey's or excavation's results should not depend on that. AS4QGIS and AS4CAD are released under the MIT license; the source code is open specifically to encourage its distribution and independent further development.
+
+### Implementation
+
 AS4CAD reimplements the ArchSurv4QGIS Synthesis logic from scratch in AutoLISP - not a conversion of the original PyQGIS code, but a new implementation of the same point-ID scheme, shape-type spectrum, and attribute set, kept compatible with ArchSurv4QGIS output by design.
 
 The code was written by Claude Sonnet 5 (Anthropic) through iterative, requirement-by-requirement dialogue with the author, an archaeologist and the domain expert behind every design decision in this tool - classification logic, symbol geometry, attribute handling, layer conventions. Disclosed here in the interest of methodological transparency, as archaeological tools generally should be.
+
+### Related projects
+
+Two other open source tools cover related ground:
+
+- **[survey2gis](https://github.com/survey2gis)** ([survey-tools.org](https://www.survey-tools.org)) - also parses delimited survey text into GIS geometry.
+- **[Tachy2GIS](https://tachygis.github.io)** (TachyGIS/T2G) - a live bridge for direct visualization of total-station measurements in QGIS.
 
 ---
 

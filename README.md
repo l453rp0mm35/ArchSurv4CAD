@@ -133,7 +133,7 @@ AS4CAD uses only standard AutoLISP and core Visual LISP functions - no ActiveX/C
 3. Optionally run `AS4SETTINGS` to configure the drawing to your liking - or just skip this and use the factory defaults.
 4. Run `AS4IMPORT`, select your delimited text file (`.csv`/`.txt`/`.asc`, any of tab/semicolon/comma as separator, auto-detected).
 5. Review the command-line summary (features imported per shape type, skipped/invalid lines, split shpcontainers, feature layer count).
-6. Use `AS4ZOOM`/`AS4SELECT` any time afterward to jump straight to a feature by its ID or code.
+6. Use `AS4ZOOM`/`AS4SELECTXDATA` any time afterward to jump straight to a feature by its ID or code, or `AS4SELECTLAYER` by layer name.
 7. Optionally, run `AS4XPORT` at any point to export the data back out for QGIS or any other GIS tool.
 
 ---
@@ -274,14 +274,19 @@ Bulk-tags untagged `POLYLINE` entities (lines drawn manually, or traced over a p
 - Shows a dry-run summary (including any layer names it couldn't parse) before asking for confirmation.
 - Layers already prefixed `as4_` are excluded from candidates, since those are AS4CAD's own managed layers.
 
-### `AS4ZOOM` / `AS4SELECT`
+### `AS4ZOOM` / `AS4SELECTXDATA` / `AS4SELECTLAYER`
 
-Locate objects by feature ID or code, instead of hunting through layers - matched directly against every object's own block attribute/Xdata, so it works regardless of the current `AS4SETTINGS` Layerstructure configuration and finds point symbols *and* lines/polygons alike.
+Locate objects two different ways: by feature ID/code, or by layer name.
+
+**By ID/code** (`AS4ZOOM`, `AS4SELECTXDATA`) - matched directly against every object's own block attribute/Xdata, instead of hunting through layers, so it works regardless of the current `AS4SETTINGS` Layerstructure configuration and finds point symbols *and* lines/polygons alike.
 
 - Enter a plain integer (e.g. `40`) to match by **ID**, or any other text (e.g. `VF`) to match by **code** (case-insensitive) - or a comma-separated mix of several (e.g. `4,12,VF,FUND`), matching anything satisfying *any* of them.
-- `AS4ZOOM` zooms to the combined bounding box of everything found. `AS4SELECT` does the same and also selects the found objects.
 - The confirmation line reports a breakdown, e.g. `(3 point symbol(s), 1 line/polygon(s))`.
 - The search itself is filtered to INSERT/POLYLINE entities before any attribute is read, and AS4CAD's own non-data blocks (`AS4_Vertex`, `AS4_GridCross`) are skipped before their attribute chain is ever walked - so a large `AS4NET` reference grid doesn't slow these commands down.
+
+**By layer name** (`AS4ZOOM`, `AS4SELECTLAYER`) - matched against the layer a wildcard pattern, the same syntax as the Layer Panel's own "Search for Layer" box: `*` for any run of characters, `?` for exactly one (e.g. `*193*`, `AS4_*`). Finds every entity on a matching layer regardless of type - not just AS4CAD point/line data, also text labels, grid crosses, anything else that happens to be on that layer.
+
+`AS4ZOOM` accepts either kind in the same prompt - a term containing `*` or `?` is matched as a layer pattern, anything else as ID/code criteria - and only zooms. `AS4SELECTXDATA`/`AS4SELECTLAYER` do the matching kind of search each is named for, and also select what they find.
 
 ### `AS4NET`
 

@@ -284,9 +284,17 @@ Locate objects two different ways: by feature ID/code, or by layer name.
 - The confirmation line reports a breakdown, e.g. `(3 point symbol(s), 1 line/polygon(s))`.
 - The search itself is filtered to INSERT/POLYLINE entities before any attribute is read, and AS4CAD's own non-data blocks (`AS4_Vertex`, `AS4_GridCross`) are skipped before their attribute chain is ever walked - so a large `AS4NET` reference grid doesn't slow these commands down.
 
-**By layer name** (`AS4ZOOM`, `AS4SELECTLAYER`) - matched against the layer a wildcard pattern, the same syntax as the Layer Panel's own "Search for Layer" box: `*` for any run of characters, `?` for exactly one (e.g. `*193*`, `AS4_*`). Finds every entity on a matching layer regardless of type - not just AS4CAD point/line data, also text labels, grid crosses, anything else that happens to be on that layer.
+**By layer name** (`AS4ZOOM`, `AS4SELECTLAYER`) - matched against the layer name with wildcards, the same syntax as the Layer Panel's own "Search for Layer" box: `*` for any run of characters, `?` for exactly one (it also matches a space), and `,` to give several patterns at once (e.g. `*193*`, `AS4_*,*193*`). Finds every entity on a matching layer regardless of type - not just AS4CAD point/line data, also text labels, grid crosses, anything else on that layer.
 
-`AS4ZOOM` accepts either kind in the same prompt - a term containing `*` or `?` is matched as a layer pattern, anything else as ID/code criteria - and only zooms. `AS4SELECTXDATA`/`AS4SELECTLAYER` do the matching kind of search each is named for, and also select what they find.
+**Click or Enter instead of typing** - all three commands share one prompt that takes typed text, a click on an object, or a plain Enter:
+
+| | click an object | Enter (nothing typed) |
+|---|---|---|
+| `AS4SELECTLAYER` | selects everything on its layer | selects everything on the current layer |
+| `AS4SELECTXDATA` | selects everything with its ID (its code if it has no ID) | selects all AS4CAD objects on the current layer |
+| `AS4ZOOM` | zooms to everything with its ID (code, or layer if it has neither) | zooms to the current layer |
+
+A space ends typed input at this prompt, so use `?` instead of a space in a layer name (e.g. `Layer?1`). `AS4ZOOM` and the typed input are otherwise unchanged: a term containing `*` or `?` is matched as a layer pattern, anything else as ID/code criteria. `AS4ZOOM` only zooms; `AS4SELECTXDATA`/`AS4SELECTLAYER` also select what they find.
 
 ### `AS4NET`
 

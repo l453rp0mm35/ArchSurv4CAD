@@ -1,7 +1,7 @@
 ;;; ============================================================================
 ;;; AS4CAD.lsp
 ;;; ArchSurv4QGIS - CAD port of the Synthesis workflow (AutoLISP / FLISP)
-;;; Version 1.3.5
+;;; Version 1.3.7
 ;;;
 ;;; Reads a delimited text file exported from a survey device, parses the
 ;;; 10-character ArchSurv point_ID scheme (see AS4QGIS documentation), and
@@ -41,6 +41,18 @@
 ;;;   AS4INFO           - lists every AS4CAD command with a letter, then
 ;;;                       prints a short description (usage + effect) for
 ;;;                       whichever letter is entered
+;;;   AS4TABLE          - links an external table (e.g. a CSV from the
+;;;                       excavation database) to the drawing's layers
+;;;                       via an ID read out of the layer names (template
+;;;                       such as ID_ID_*_*). The file is re-read on
+;;;                       every use. Steps: Link / Report / Columns /
+;;;                       Filter (several criteria, then select, zoom or
+;;;                       isolate) / RGB-via-column (colors the layers
+;;;                       from a table column holding color values) /
+;;;                       Name (rename layers from the table, with log;
+;;;                       reVert) / Info (click an object or type a key) /
+;;;                       Back (unisolate, restore colors and visibility) /
+;;;                       Unlink
 ;;;   AS4TAGFROMLAYER   - bulk-tags untagged lines/polygons with AS4QGIS
 ;;;                       attributes, parsed from their layer name rather
 ;;;                       than a point_ID (e.g. lines traced over a
@@ -67,15 +79,23 @@
 ;;;                       (e.g. "40" or "VF"; auto-detected - plain
 ;;;                       integers are IDs, anything else is matched as
 ;;;                       a code, case-insensitive) via block attribute/
-;;;                       Xdata, regardless of which layer it is on
+;;;                       Xdata, regardless of which layer it is on.
+;;;                       Alternatively click an object (zooms to its ID,
+;;;                       or code, or - if it has neither - its layer)
+;;;                       or press Enter (current layer)
 ;;;   AS4SELECTXDATA    - like AS4ZOOM's ID/code search, but also
 ;;;                       selects the found objects; accepts one or
 ;;;                       several comma-separated IDs/codes at once
-;;;                       (e.g. "40" or "4,12,VF,FUND")
+;;;                       (e.g. "40" or "4,12,VF,FUND"); alternatively
+;;;                       click an object (selects everything with its
+;;;                       ID, or its code if it has no ID) or press Enter
+;;;                       (all AS4 objects on the current layer)
 ;;;   AS4SELECTLAYER    - like AS4ZOOM's layer-pattern search, but also
 ;;;                       selects the found objects; any entity type on
-;;;                       a layer matching the pattern, not just AS4CAD
-;;;                       data objects
+;;;                       a layer matching the pattern(s) (comma-
+;;;                       separated for several), not just AS4CAD data
+;;;                       objects; alternatively click an object
+;;;                       (selects its layer) or press Enter (current layer)
 ;;;   AS4NET            - the only entry point for the reference survey
 ;;;                       grid: a menu with two steps:
 ;;;                       Grid - draws a reference survey grid (small
@@ -197,7 +217,7 @@
 ;; -----------------------------------------------------------------------
 ;; global settings (defaults kept intentionally small)
 ;; -----------------------------------------------------------------------
-(setq *AS4:VERSION* "1.3.5")
+(setq *AS4:VERSION* "1.3.7")
 ;; true color constants (no exact ACI equivalent) - used as the factory
 ;; default for sample (brown) and find (light blue) colors throughout
 (setq *AS4:TC-BROWN* 9127187)      ;; RGB(139,69,19)
@@ -694,8 +714,6 @@
   (if old (vl-catch-all-apply 'setvar (list "INPUTSEARCHOPTIONS" old)))
 )
 
-
-
 ;; AS4SETLAYER - all layer-related choices in one pass: first, which field
 ;; names the per-feature layer that lines/polygons (and any "C"-mode
 ;; symbols below) land on; then a quick A/B/C/D prompt per point category,
@@ -978,6 +996,11 @@
     (setq str (substr str (+ pos 1 (strlen ch))))
   )
   (reverse (cons str lst))
+)
+
+;; atof that also accepts a decimal comma ("12,5"); empty or nil gives 0.0
+(defun AS4:safe-atof (s)
+  (if (and s (> (strlen s) 0)) (atof (vl-string-subst "." "," s)) 0.0)
 )
 
 ;; collapses consecutive repeats of a single delimiter character into one,
@@ -1327,7 +1350,7 @@
 ;; an ATTDEF (tag LABEL) so the running-number label created at insertion
 ;; time is a real, editable block attribute rather than a separate text.
 ;; -----------------------------------------------------------------------
-(defun AS4:ensure-block (name entities)
+(defun AS4:ensure-block (name entities / e)
   (entmake (list (cons 0 "BLOCK") (cons 2 name) (cons 70 0)
                   (cons 10 (list 0.0 0.0 0.0)) (cons 3 name) (cons 1 "")))
   (foreach e entities (entmake e))
@@ -1575,7 +1598,7 @@
 ;; invisible POINT_ID attribute, and any further invisible attributes
 ;; passed in "extra" (a list of (tag . value) pairs) that mirror the
 ;; entity's Xdata as real, Properties-palette-visible block attributes.
-(defun AS4:insert-symbol-labeled (blockname pt symlayer txtlayer labeltext colorgroup colorval height pid extra / ins)
+(defun AS4:insert-symbol-labeled (blockname pt symlayer txtlayer labeltext colorgroup colorval height pid extra / ins pair)
   (setq ins (entmakex (list
     (cons 0 "INSERT") (cons 8 symlayer) (cons 2 blockname) (cons 10 pt)
     (cons 41 *AS4:SYMBOLSCALE*) (cons 42 *AS4:SYMBOLSCALE*) (cons 43 *AS4:SYMBOLSCALE*)
@@ -1599,7 +1622,7 @@
 ;; above the insertion point (gap = local distance above pt, scaled with
 ;; the symbol) instead of the default diagonal offset - used for the
 ;; height point so its value sits centered over the triangle.
-(defun AS4:insert-symbol-labeled-centered (blockname pt symlayer txtlayer labeltext colorgroup colorval height gap pid extra / ins pos)
+(defun AS4:insert-symbol-labeled-centered (blockname pt symlayer txtlayer labeltext colorgroup colorval height gap pid extra / ins pos pair)
   (setq pos (list (car pt) (+ (cadr pt) (* gap *AS4:SYMBOLSCALE*)) (caddr pt)))
   (setq ins (entmakex (list
     (cons 0 "INSERT") (cons 8 symlayer) (cons 2 blockname) (cons 10 pt)
@@ -1687,7 +1710,7 @@
                         gfeature gcontainer gshptype gcat glayer zvals maxh minh
                         firstpt closed flags header vname style radius
                         skipcount skiplog pblk stationcount
-                        runlist runcount runidx run splitlog symlayer)
+                        runlist runcount runidx run splitlog symlayer p s c sc)
 
   (AS4:define-all-symbols)
 
@@ -1715,9 +1738,9 @@
         (if (>= (length parts) 5)
           (progn
             (setq pid  (AS4:rtrim (nth 0 parts))
-                  xv   (atof (nth 1 parts))
-                  yv   (atof (nth 2 parts))
-                  zv   (atof (nth 3 parts))
+                  xv   (AS4:safe-atof (nth 1 parts))
+                  yv   (AS4:safe-atof (nth 2 parts))
+                  zv   (AS4:safe-atof (nth 3 parts))
                   code (AS4:rtrim (nth 4 parts)))
             (setq pt (list xv yv zv))
 
@@ -2413,7 +2436,7 @@
 ;; this project) since nothing else can ever match - this alone skips
 ;; every TEXT label (AS4NET's Label coordinate labels included) at the C
 ;; level, before a single entget is spent on them.
-(defun AS4:find-by-criteria (idlist codelist / ss i ent idc id code bbox found etype)
+(defun AS4:find-by-criteria (idlist codelist / ss i ent idc id code bbox found etype p)
   (setq bbox nil found '())
   (setq ss (ssget "X" (list (cons 0 "INSERT,POLYLINE"))))
   (if ss
@@ -2466,6 +2489,87 @@
 (defun AS4:zoom-to-selection (ss)
   (command "_.ZOOM" "_Object" ss "")
 )
+;; escapes wcmatch's special characters in an exact layer name so it
+;; matches literally inside an (8 . pattern) filter - needed when the
+;; layer comes from a picked object rather than from a typed pattern.
+(defun AS4:wc-escape (s / out i ch)
+  (setq out "" i 1)
+  (while (<= i (strlen s))
+    (setq ch (substr s i 1))
+    (if (member ch '("`" "*" "?" "#" "@" "." "~" "[" "]" "," "'" "\""))
+      (setq out (strcat out "`" ch))
+      (setq out (strcat out ch))
+    )
+    (setq i (1+ i))
+  )
+  out
+)
+
+;; one prompt that accepts EITHER a click on an object OR typed text.
+;; entsel cannot do this - initget bit 128 (arbitrary input) does not
+;; apply to entsel, so typed text was rejected. getpoint does support
+;; it: a click returns a point (the object under it is then looked up
+;; with ssget), typed text comes back as a string - the same
+;; type-at-the-cursor prompt as getstring. Returns an entity name
+;; (clicked), a string (typed; "" for a plain Enter), or nil (Esc /
+;; nothing under the click).
+;; Caveat: typed text that is itself a valid point, e.g. "4,12" (two
+;; IDs), reaches getpoint as the point 4,12 - when no object lies there
+;; the typed text is recovered from LASTPROMPT. A space ends typed
+;; input, so use ? instead of a space inside a layer pattern.
+(defun AS4:pick-or-text (prompt / r ss res lp pos nxt tail dyn)
+  (setq res nil)
+  ;; Dynamic Input's pointer-input fields (X / Y / Z boxes at the
+  ;; cursor) turn a getpoint prompt into several text boxes where
+  ;; Tab/comma/* jump to the next field. Switch pointer input off for
+  ;; this one prompt (DYNMODE 1/3 -> 2: dimension input only) so typed
+  ;; text lands in the single command-prompt box instead; the user's
+  ;; setting is restored right after, also on Esc.
+  (setq dyn (vl-catch-all-apply 'getvar (list "DYNMODE")))
+  (if (and (not (vl-catch-all-error-p dyn)) (member dyn '(1 3)))
+    (vl-catch-all-apply 'setvar (list "DYNMODE" 2))
+    (setq dyn nil)
+  )
+  (initget 128)
+  (setq r (vl-catch-all-apply 'getpoint (list prompt)))
+  (if dyn (vl-catch-all-apply 'setvar (list "DYNMODE" dyn)))
+  (if (vl-catch-all-error-p r) (setq r 'ESC))
+  (cond
+    ((= r 'ESC) (setq res nil))
+    ;; plain Enter: empty string = "current layer" for the callers
+    ((null r) (setq res ""))
+    ((= (type r) 'STR) (setq res (AS4:trim r)))
+    ((and r (listp r))
+      (setq ss (ssget r))
+      (if ss
+        (setq res (ssname ss 0))
+        (progn
+          (setq lp (getvar "LASTPROMPT") pos nil nxt (vl-string-search ": " lp))
+          (while nxt (setq pos nxt nxt (vl-string-search ": " lp (1+ nxt))))
+          (if pos
+            (progn
+              (setq tail (AS4:trim (substr lp (+ pos 3))))
+              (if (and (> (strlen tail) 0) (not (wcmatch tail "*<*")))
+                (setq res tail)
+                (princ "\nNo object at that point.")))
+            (princ "\nNo object at that point.")))))
+  )
+  res
+)
+
+;; selects + zooms to everything on layers matching pattern, reports
+;; with label describing where the pattern came from
+(defun AS4:select-layer-pattern (pattern label / ss)
+  (setq ss (AS4:find-by-layer-pattern pattern))
+  (if (not ss)
+    (princ (strcat "\nNo objects found on " label "."))
+    (progn
+      (AS4:zoom-to-selection ss)
+      (sssetfirst nil ss)
+      (princ (strcat "\nZoomed to and selected " (itoa (sslength ss)) " object(s) on " label "."))
+    )
+  )
+)
 
 ;; zooms the view to a (minx miny maxx maxy) bbox, with a margin so
 ;; objects aren't flush against the screen edge
@@ -2507,41 +2611,59 @@
   (strcat (itoa npoints) " point symbol(s), " (itoa nlines) " line/polygon(s)")
 )
 
-;; AS4ZOOM auto-detects which of the two search kinds was typed: a
-;; literal "*" or "?" anywhere in the input means a layer-name pattern
-;; (AS4:find-by-layer-pattern), otherwise it's parsed as the usual
-;; ID/code criteria (AS4:find-by-criteria) - IDs and codes never
-;; contain those characters in practice, so this is unambiguous.
-(defun c:AS4ZOOM ( / instr crit result bbox ss n)
-  (setq instr (getstring T "\nFeature ID/code to zoom to, or a layer name pattern using * as wildcard (e.g. 40, VF, or *193*): "))
-  (if (or (not instr) (= (strlen instr) 0))
-    (princ "\nCancelled.")
-    (if (or (vl-string-search "*" instr) (vl-string-search "?" instr))
-      (progn
-        (setq ss (AS4:find-by-layer-pattern instr))
-        (if (not ss)
-          (princ (strcat "\nNo objects found on a layer matching \"" instr "\"."))
-          (progn
-            (setq n (sslength ss))
-            (AS4:zoom-to-selection ss)
-            (princ (strcat "\nZoomed to " (itoa n) " object(s) on layer(s) matching \"" instr "\"."))
-          )
-        )
-      )
-      (progn
-        (setq crit (AS4:parse-criteria instr))
-        (setq result (AS4:find-by-criteria (car crit) (cadr crit)))
-        (setq bbox (cadr result))
-        (if (not bbox)
-          (princ (strcat "\nNo objects found for \"" instr "\"."))
-          (progn
-            (AS4:zoom-to-bbox bbox)
-            (princ (strcat "\nZoomed to " (itoa (length (car result))) " object(s) for \"" instr
-                           "\" (" (AS4:count-by-type (car result)) ")."))
-          )
-        )
+;; zoom-only helpers shared by the AS4ZOOM branches
+(defun AS4:zoom-layer (pattern label / ss)
+  (setq ss (AS4:find-by-layer-pattern pattern))
+  (if (not ss)
+    (princ (strcat "\nNo objects found on " label "."))
+    (progn
+      (AS4:zoom-to-selection ss)
+      (princ (strcat "\nZoomed to " (itoa (sslength ss)) " object(s) on " label "."))
+    )
+  )
+)
+(defun AS4:zoom-criteria (idlist codelist label / result bbox)
+  (setq result (AS4:find-by-criteria idlist codelist))
+  (setq bbox (cadr result))
+  (if (not bbox)
+    (princ (strcat "\nNo objects found for " label "."))
+    (progn
+      (AS4:zoom-to-bbox bbox)
+      (princ (strcat "\nZoomed to " (itoa (length (car result))) " object(s) for " label
+                     " (" (AS4:count-by-type (car result)) ")."))
+    )
+  )
+)
+
+;; AS4ZOOM: same input as AS4SELECTXDATA/AS4SELECTLAYER - click an
+;; object, c, or typed text. A click zooms to everything sharing the
+;; object's ID (or code; for an object with neither, its layer), c to
+;; the current layer. Typed text containing "*" or "?" is a layer-name
+;; pattern, anything else an ID/code list (IDs and codes never contain
+;; those characters in practice, so this is unambiguous).
+(defun c:AS4ZOOM ( / inp ic id code crit lay)
+  (setq inp (AS4:pick-or-text "\nClick an object (its ID/code), Enter = current layer, or ID(s)/code(s) (e.g. 40 or 4,12,VF), or layer name(s) with * or ? (e.g. *193*,AS4_*): "))
+  (cond
+    ((not inp) (princ "\nCancelled."))
+    ((= (type inp) 'ENAME)
+      (setq ic (AS4:entity-id-code inp) id (car ic) code (cadr ic))
+      (cond
+        (id (AS4:zoom-criteria (list id) nil (strcat "ID " (itoa id))))
+        (code (AS4:zoom-criteria nil (list (strcase code)) (strcat "code " code)))
+        (T (setq lay (cdr (assoc 8 (entget inp))))
+           (AS4:zoom-layer (AS4:wc-escape lay) (strcat "layer \"" lay "\"")))
       )
     )
+    ((= inp "")
+      (setq lay (getvar "CLAYER"))
+      (AS4:zoom-layer (AS4:wc-escape lay) (strcat "the current layer \"" lay "\"")))
+    ((or (vl-string-search "*" inp) (vl-string-search "?" inp))
+      (AS4:zoom-layer inp (strcat "a layer matching \"" inp "\"")))
+    (T
+      (setq crit (AS4:parse-criteria inp))
+      (if (and (null (car crit)) (null (cadr crit)))
+        (princ "\nNo valid IDs or codes entered.")
+        (AS4:zoom-criteria (car crit) (cadr crit) (strcat "\"" inp "\""))))
   )
   (princ)
 )
@@ -2550,12 +2672,66 @@
 ;; AS4SELECT, renamed alongside the new AS4SELECTLAYER so the two
 ;; search kinds (by ID/code vs. by layer name) are named distinctly
 ;; rather than one plain AS4SELECT meaning only one of them
-(defun c:AS4SELECTXDATA ( / instr crit idlist codelist result found bbox ss2 e)
-  (setq instr (getstring "\nFeature ID(s)/code(s) to select - one, or several comma-separated (e.g. 40, or 4,12,VF,FUND): "))
-  (if (or (not instr) (= (strlen instr) 0))
-    (princ "\nCancelled.")
-    (progn
-      (setq crit (AS4:parse-criteria instr))
+(defun c:AS4SELECTXDATA ( / inp ic id code crit idlist codelist result found bbox ss ss2 e i n cur)
+  (setq inp (AS4:pick-or-text "\nClick an object (its ID), Enter = current layer, or ID(s)/code(s), comma-separated (e.g. 40 or 4,12,VF,FUND): "))
+  (cond
+    ((not inp) (princ "\nCancelled."))
+    ;; --- click: everything sharing the picked object's ID (or, if it
+    ;; has none, its code)
+    ((= (type inp) 'ENAME)
+      (setq ic (AS4:entity-id-code inp) id (car ic) code (cadr ic))
+      (cond
+        (id (setq idlist (list id) codelist nil))
+        (code (setq idlist nil codelist (list (strcase code))))
+      )
+      (if (not (or idlist codelist))
+        (princ "\nThe picked object carries no AS4 ID or code.")
+        (progn
+          (setq result (AS4:find-by-criteria idlist codelist))
+          (setq found (car result) bbox (cadr result))
+          (if (not bbox)
+            (princ "\nNo objects found.")
+            (progn
+              (AS4:zoom-to-bbox bbox)
+              (setq ss2 (ssadd))
+              (foreach e found (setq ss2 (ssadd e ss2)))
+              (sssetfirst nil ss2)
+              (princ (strcat "\nZoomed to and selected " (itoa (length found)) " object(s) with "
+                             (if idlist (strcat "ID " (itoa id)) (strcat "code " code))
+                             " (" (AS4:count-by-type found) ")."))
+            )
+          )
+        )
+      )
+    )
+    ;; --- "c": every AS4 point/line/polygon on the current layer
+    ((= inp "")
+      (setq cur (getvar "CLAYER"))
+      (setq ss (ssget "X" (list (cons 0 "INSERT,POLYLINE") (cons 8 (AS4:wc-escape cur)))))
+      (setq ss2 (ssadd) n 0)
+      (if ss
+        (progn
+          (setq i 0)
+          (while (< i (sslength ss))
+            (setq e (ssname ss i))
+            (setq ic (AS4:entity-id-code e))
+            (if (or (car ic) (cadr ic)) (progn (setq ss2 (ssadd e ss2)) (setq n (1+ n))))
+            (setq i (1+ i))
+          )
+        )
+      )
+      (if (= n 0)
+        (princ (strcat "\nNo AS4 objects found on the current layer \"" cur "\"."))
+        (progn
+          (AS4:zoom-to-selection ss2)
+          (sssetfirst nil ss2)
+          (princ (strcat "\nZoomed to and selected " (itoa n) " AS4 object(s) on the current layer \"" cur "\"."))
+        )
+      )
+    )
+    ;; --- typed IDs/codes (unchanged behaviour)
+    (T
+      (setq crit (AS4:parse-criteria inp))
       (setq idlist (car crit) codelist (cadr crit))
       (if (and (= (length idlist) 0) (= (length codelist) 0))
         (princ "\nNo valid IDs or codes entered.")
@@ -2591,22 +2767,20 @@
 ;; "**" and the cursor placed between them - AutoLISP's getstring is a
 ;; plain text prompt with no support for pre-filled/positioned text,
 ;; that specific convenience is a GUI-dialog-only capability.
-(defun c:AS4SELECTLAYER ( / pat ss n)
-  (setq pat (getstring T "\nLayer name pattern to select - * = any characters, ? = one character (e.g. *193* or AS4_*): "))
-  (if (or (not pat) (= (strlen pat) 0))
-    (princ "\nCancelled.")
-    (progn
-      (setq ss (AS4:find-by-layer-pattern pat))
-      (if (not ss)
-        (princ (strcat "\nNo objects found on a layer matching \"" pat "\"."))
-        (progn
-          (setq n (sslength ss))
-          (AS4:zoom-to-selection ss)
-          (sssetfirst nil ss)
-          (princ (strcat "\nZoomed to and selected " (itoa n) " object(s) on layer(s) matching \"" pat "\"."))
-        )
-      )
-    )
+(defun c:AS4SELECTLAYER ( / inp lay)
+  (setq inp (AS4:pick-or-text "\nClick an object (its layer), Enter = current layer, or layer name(s): * = any characters, ? = one character, comma = several (e.g. *193*,AS4_*): "))
+  (cond
+    ((not inp) (princ "\nCancelled."))
+    ;; click: the picked object's layer, matched literally
+    ((= (type inp) 'ENAME)
+      (setq lay (cdr (assoc 8 (entget inp))))
+      (AS4:select-layer-pattern (AS4:wc-escape lay) (strcat "layer \"" lay "\"")))
+    ;; c: current layer, matched literally
+    ((= inp "")
+      (setq lay (getvar "CLAYER"))
+      (AS4:select-layer-pattern (AS4:wc-escape lay) (strcat "the current layer \"" lay "\"")))
+    ;; typed wildcard pattern (unchanged behaviour)
+    (T (AS4:select-layer-pattern inp (strcat "a layer matching \"" inp "\"")))
   )
   (princ)
 )
@@ -2825,7 +2999,7 @@
 ;; silently return 0.0 for "", which is a real elevation value and would
 ;; be indistinguishable from an actual zero)
 (defun AS4:atof-or-nil (s)
-  (if (and s (> (strlen s) 0)) (atof s) nil)
+  (if (and s (> (strlen s) 0)) (AS4:safe-atof s) nil)
 )
 ;; GeoJSON polygon rings must be closed (first coordinate repeated as the
 ;; last); AutoCAD's POLYLINE closed flag doesn't duplicate the vertex
@@ -2838,7 +3012,7 @@
 
 ;; internal - AS4XPORT's "GeoJson" step
 (defun AS4:xport-geojson ( / ss i ent etype attrs pid ox oy oz idstr base fout
-                    rows rowdata kind mx mn shptype geomtype pts ring
+                    rows rowdata kind mx mn shptype pts ring
                     geomjson props first cnt epsg mirror ispoly mirrorjson)
   (princ "\nSelect objects to export (press Enter with nothing selected to export the whole drawing instead): ")
   (setq ss (ssget))
@@ -3232,6 +3406,1870 @@
 )
 
 ;; =========================================================================
+;; AS4TABLE: links an external table (CSV exported from an excavation
+;; database) to the drawing's layers, by an ID that is read out of the
+;; LAYER NAMES. Layer names are only a snapshot (e.g. the dating part of
+;; 202616_1_Vf_RZ may be outdated), the table is the maintained source -
+;; so the link uses only the ID part of the name, and the table file
+;; itself is never copied into the drawing: it is re-read on every use,
+;; so overwriting the CSV is reflected immediately, and the link (file,
+;; key column, templates) survives because it refers to keys, not rows.
+;;
+;; Template syntax (same for layer names and for key column values):
+;; tokens separated by one separator character (_ - . / space | : ;),
+;; ID = a token that is part of the key (several ID are joined into a
+;; composite key, e.g. ID_ID_*_* = excavation number + unit number),
+;; * = any token, anything else = literal token (wildcards allowed).
+;; The layer must have exactly as many tokens as the template. Keys
+;; compare case-insensitively and without leading zeros (04 = 4).
+;; (Old templates written with braces, {ID}_{ID}_*_*, still work.)
+;;
+;; Nothing in the table layout is hard-coded: column names, count and
+;; meaning come from the file's header; the key column is chosen by the
+;; user. Links are stored next to the drawing in as4cad_tables.dat.
+;; =========================================================================
+
+;; ---- small helpers ------------------------------------------------------
+(defun AS4:tbl-join (lst sep / out s)
+  (setq out "")
+  (foreach s lst (setq out (if (= out "") s (strcat out sep s))))
+  out
+)
+
+(defun AS4:tbl-cell (row i / v)
+  (setq v (nth i row))
+  (if v v "")
+)
+
+(defun AS4:tbl-trim1 (v) (AS4:ltrim (AS4:rtrim v)))
+
+(defun AS4:tbl-pad (s n)
+  (while (< (strlen s) n) (setq s (strcat s " ")))
+  (if (> (strlen s) n) (substr s 1 n) s)
+)
+
+;; one-line, length-limited version of a cell for display
+(defun AS4:tbl-oneline (s n / out i ch)
+  (setq out "" i 1)
+  (while (and (<= i (strlen s)) (< (strlen out) n))
+    (setq ch (substr s i 1))
+    (setq out (strcat out (if (member ch (list "\n" (chr 13))) " " ch)))
+    (setq i (1+ i))
+  )
+  (if (< (strlen out) (strlen s)) (strcat out "...") out)
+)
+
+(defun AS4:tbl-print-list (title items cap / i it)
+  (princ (strcat "\n" title " (" (itoa (length items)) "):"))
+  (setq i 0)
+  (foreach it items
+    (if (< i cap) (princ (strcat "\n  " it)))
+    (setq i (1+ i))
+  )
+  (if (> i cap) (princ (strcat "\n  ... and " (itoa (- i cap)) " more")))
+)
+
+(defun AS4:tbl-numeric-p (s / i ch seps ok n)
+  (setq ok (> (strlen s) 0) seps 0 i 1 n (strlen s))
+  (while (and ok (<= i n))
+    (setq ch (substr s i 1))
+    (cond
+      ((and (>= (ascii ch) 48) (<= (ascii ch) 57)))
+      ((and (= i 1) (member ch '("-" "+")) (> n 1)))
+      ((and (member ch '("." ",")) (= seps 0)) (setq seps 1))
+      (T (setq ok nil))
+    )
+    (setq i (1+ i))
+  )
+  ok
+)
+
+;; "r,g,b" / "r;g;b" / "r g b" / "rgb(r,g,b)" (0-255), "#RRGGBB" or "0xRRGGBB"
+;; -> true color integer, or nil
+(defun AS4:tbl-hexval (str / v i d)
+  (setq v 0 i 1)
+  (while (and v (<= i (strlen str)))
+    (setq d (vl-string-search (strcase (substr str i 1)) "0123456789ABCDEF"))
+    (setq v (if d (+ (* v 16) d) nil) i (1+ i)))
+  v
+)
+
+(defun AS4:tbl-parse-rgb (s / out i ch parts r g b prev)
+  (setq s (AS4:trim s))
+  (if (wcmatch (strcase s) "RGB(*)") (setq s (AS4:trim (substr s 5 (- (strlen s) 5)))))
+  (cond
+    ((= s "") nil)
+    ((wcmatch (strcase s) "0X??????")
+      (setq r (AS4:tbl-hexval (substr s 3 2)) g (AS4:tbl-hexval (substr s 5 2)) b (AS4:tbl-hexval (substr s 7 2)))
+      (if (and r g b) (+ (* r 65536) (* g 256) b) nil))
+    ((and (= (strlen s) 7) (= (substr s 1 1) "#"))
+      (setq r (AS4:tbl-hexval (substr s 2 2)) g (AS4:tbl-hexval (substr s 4 2)) b (AS4:tbl-hexval (substr s 6 2)))
+      (if (and r g b) (+ (* r 65536) (* g 256) b) nil))
+    (T
+      (setq out "" i 1 prev nil)
+      (while (<= i (strlen s))
+        (setq ch (substr s i 1))
+        (if (member ch '("," ";" " "))
+          (progn (if (not prev) (setq out (strcat out ","))) (setq prev T))
+          (setq out (strcat out ch) prev nil))
+        (setq i (1+ i)))
+      (setq parts (AS4:split out ","))
+      (if (and (= (length parts) 3)
+               (AS4:is-integer-str (nth 0 parts)) (AS4:is-integer-str (nth 1 parts)) (AS4:is-integer-str (nth 2 parts)))
+        (progn
+          (setq r (atoi (nth 0 parts)) g (atoi (nth 1 parts)) b (atoi (nth 2 parts)))
+          (if (and (<= 0 r 255) (<= 0 g 255) (<= 0 b 255)) (+ (* r 65536) (* g 256) b) nil))
+        nil))
+  )
+)
+
+(defun AS4:tbl-all-unique (vals / s ok prev v)
+  (setq s (vl-sort vals '<) ok (= (length s) (length vals)) prev nil)
+  (foreach v s
+    (if (and prev (= v prev)) (setq ok nil))
+    (setq prev v)
+  )
+  ok
+)
+
+;; ---- reading the CSV ------------------------------------------------------
+;; UTF-8 files read through a legacy ANSI read-line arrive as raw byte
+;; sequences. They are decoded here: characters up to U+00FF (umlauts,
+;; sharp s, Danish/Swedish letters, accents ...) become the ordinary
+;; character of the same code; anything beyond (Turkish dotless i,
+;; Polish, Czech, Greek, Cyrillic ...) becomes AutoCAD's own \U+XXXX
+;; escape, which is plain ASCII and which AutoCAD displays as the real
+;; character in text. A file is only treated as UTF-8 if it has a BOM or
+;; every non-ASCII cell is valid UTF-8; otherwise it is left as read.
+(defun AS4:tbl-hex (n / digits out)
+  (setq digits "0123456789ABCDEF" out "")
+  (while (> n 0)
+    (setq out (strcat (substr digits (1+ (rem n 16)) 1) out) n (/ n 16)))
+  (while (< (strlen out) 4) (setq out (strcat "0" out)))
+  out
+)
+
+(defun AS4:tbl-cp-str (cp)
+  (if (< cp 256) (chr cp) (strcat "\\U+" (AS4:tbl-hex cp)))
+)
+
+;; decoded string, or nil if s is not valid UTF-8
+(defun AS4:tbl-utf8-decode (s / out i n c need cp k c2 ok)
+  (setq out "" i 1 n (strlen s) ok T)
+  (while (and ok (<= i n))
+    (setq c (ascii (substr s i 1)) need 0)
+    (cond
+      ((< c 128) (setq out (strcat out (substr s i 1)) i (1+ i)))
+      ((and (>= c 194) (<= c 223)) (setq need 1 cp (- c 192)))
+      ((and (>= c 224) (<= c 239)) (setq need 2 cp (- c 224)))
+      ((and (>= c 240) (<= c 244)) (setq need 3 cp (- c 240)))
+      (T (setq ok nil))
+    )
+    (if (and ok (>= c 128))
+      (progn
+        (setq k 1)
+        (while (and ok (<= k need))
+          (setq c2 (if (<= (+ i k) n) (ascii (substr s (+ i k) 1)) 0))
+          (if (and (>= c2 128) (<= c2 191))
+            (setq cp (+ (* cp 64) (- c2 128)))
+            (setq ok nil))
+          (setq k (1+ k))
+        )
+        (if ok (setq out (strcat out (AS4:tbl-cp-str cp)) i (+ i 1 need)))
+      )
+    )
+  )
+  (if ok out nil)
+)
+
+(defun AS4:tbl-decode-all (recs bom / out ok any r row v d)
+  (setq out '() ok T any nil)
+  (foreach r recs
+    (setq row '())
+    (foreach v r
+      (setq d (AS4:tbl-utf8-decode v))
+      (if d
+        (progn (if (/= d v) (setq any T)) (setq row (cons d row)))
+        (setq ok nil row (cons v row)))
+    )
+    (setq out (cons (reverse row) out))
+  )
+  (if (and any (or ok bom)) (reverse out) recs)
+)
+
+(defun AS4:tbl-detect-delim (line / best bestn d n i ch inq)
+  (setq best "," bestn 0)
+  (foreach d (list "\t" ";" "," "|")
+    (setq n 0 inq nil i 1)
+    (while (<= i (strlen line))
+      (setq ch (substr line i 1))
+      (cond
+        ((= ch "\"") (setq inq (not inq)))
+        ((and (not inq) (= ch d)) (setq n (1+ n)))
+      )
+      (setq i (1+ i))
+    )
+    (if (> n bestn) (setq best d bestn n))
+  )
+  best
+)
+
+;; reads a delimited text file into a list of records (each a list of
+;; trimmed strings). Handles a BOM, an auto-detected delimiter, quoted
+;; fields containing the delimiter, doubled quotes and - importantly -
+;; quoted fields that span several lines (read-line is line based, so
+;; physical lines are joined while a quote is open).
+(defun AS4:tbl-read-records (path / f line recs fields field inq i n ch first delim utf8)
+  (setq f (open path "r"))
+  (if (not f)
+    nil
+    (progn
+      (setq recs '() fields '() field "" inq nil first T delim "," utf8 nil)
+      (while (setq line (read-line f))
+        (if (and (> (strlen line) 0) (= (substr line (strlen line)) (chr 13)))
+          (setq line (substr line 1 (1- (strlen line)))))
+        (if first
+          (progn
+            (setq first nil)
+            (if (and (>= (strlen line) 3)
+                     (= (ascii (substr line 1 1)) 239)
+                     (= (ascii (substr line 2 1)) 187)
+                     (= (ascii (substr line 3 1)) 191))
+              (setq line (substr line 4) utf8 T))
+            (setq delim (AS4:tbl-detect-delim line))
+          )
+        )
+        (cond
+          ((and (not inq) (= line "")) nil)
+          ((and (not inq) (not (vl-string-search "\"" line)))
+            (setq recs (cons (AS4:split line delim) recs)))
+          (T
+            (setq i 1 n (strlen line))
+            (while (<= i n)
+              (setq ch (substr line i 1))
+              (cond
+                (inq
+                  (if (= ch "\"")
+                    (if (and (< i n) (= (substr line (1+ i) 1) "\""))
+                      (setq field (strcat field "\"") i (1+ i))
+                      (setq inq nil))
+                    (setq field (strcat field ch))))
+                ((= ch "\"") (setq inq T))
+                ((= ch delim) (setq fields (cons field fields) field ""))
+                (T (setq field (strcat field ch)))
+              )
+              (setq i (1+ i))
+            )
+            (if inq
+              (setq field (strcat field "\n"))
+              (setq recs (cons (reverse (cons field fields)) recs) fields '() field ""))
+          )
+        )
+      )
+      (close f)
+      (if (or inq (> (strlen field) 0) fields)
+        (setq recs (cons (reverse (cons field fields)) recs)))
+      (setq recs (reverse recs))
+      (setq recs (mapcar '(lambda (r) (mapcar 'AS4:tbl-trim1 r)) recs))
+      (AS4:tbl-decode-all recs utf8)
+    )
+  )
+)
+
+;; ---- keys, templates ------------------------------------------------------
+;; upper-cases and strips leading zeros from every digit run: 04 -> 4
+(defun AS4:tbl-norm-key (s / out i n ch run)
+  (setq s (strcase (AS4:trim s)) out "" run "" i 1 n (strlen s))
+  (while (<= i (1+ n))
+    (setq ch (if (<= i n) (substr s i 1) ""))
+    (if (and (/= ch "") (>= (ascii ch) 48) (<= (ascii ch) 57))
+      (setq run (strcat run ch))
+      (progn
+        (if (> (strlen run) 0)
+          (progn
+            (while (and (> (strlen run) 1) (= (substr run 1 1) "0"))
+              (setq run (substr run 2)))
+            (setq out (strcat out run) run "")
+          )
+        )
+        (setq out (strcat out ch))
+      )
+    )
+    (setq i (1+ i))
+  )
+  out
+)
+
+;; templates used to be written with braces ({ID}_{ID}_*_*); braces are
+;; simply dropped, so old stored templates keep working
+(defun AS4:tbl-strip-braces (tpl / out i ch)
+  (setq out "" i 1)
+  (while (<= i (strlen tpl))
+    (setq ch (substr tpl i 1))
+    (if (not (member ch '("{" "}"))) (setq out (strcat out ch)))
+    (setq i (1+ i))
+  )
+  out
+)
+
+;; the template's separator = first of _ - . / space | : ;
+(defun AS4:tbl-tpl-sep (tpl / i ch res)
+  (setq i 1 res nil)
+  (while (and (not res) (<= i (strlen tpl)))
+    (setq ch (substr tpl i 1))
+    (if (vl-string-search ch "_-. /|:;") (setq res ch))
+    (setq i (1+ i))
+  )
+  res
+)
+
+;; normalized key of a layer name / cell value according to tpl, or nil
+;; if it doesn't fit. tpl nil or "" = the whole value is the key.
+(defun AS4:tbl-extract-key (name tpl / sep ttoks ntoks i tt nt parts ok)
+  (if tpl (setq tpl (AS4:tbl-strip-braces tpl)))
+  (cond
+    ((or (not tpl) (= tpl ""))
+      (if (> (strlen (AS4:trim name)) 0) (AS4:tbl-norm-key name) nil))
+    (T
+      (setq sep (AS4:tbl-tpl-sep tpl))
+      (if (not sep)
+        (if (= (strcase tpl) "ID") (AS4:tbl-norm-key name) nil)
+        (progn
+          (setq ttoks (AS4:split tpl sep) ntoks (AS4:split name sep))
+          (if (or (/= (length ttoks) (length ntoks)) (not (member "ID" (mapcar 'strcase ttoks))))
+            nil
+            (progn
+              (setq ok T parts '() i 0)
+              (foreach tt ttoks
+                (setq nt (nth i ntoks))
+                (cond
+                  ((= (strcase tt) "ID") (setq parts (cons nt parts)))
+                  ((= tt "*"))
+                  ((not (wcmatch (strcase nt) (strcase tt))) (setq ok nil))
+                )
+                (setq i (1+ i))
+              )
+              (if (and ok parts (not (member "" parts)))
+                (AS4:tbl-norm-key (AS4:tbl-join (reverse parts) sep))
+                nil)
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+;; ---- layers ---------------------------------------------------------------
+(defun AS4:tbl-layers ( / rec out nm)
+  (setq out '() rec (tblnext "LAYER" T))
+  (while rec
+    (setq nm (cdr (assoc 2 rec)))
+    (if (not (or (vl-string-search "|" nm) (member (strcase nm) '("0" "DEFPOINTS")))) (setq out (cons nm out)))
+    (setq rec (tblnext "LAYER"))
+  )
+  (reverse out)
+)
+
+;; list of (layername . key) for every layer whose name fits the template
+(defun AS4:tbl-layer-keys (ltpl / out nm k)
+  (setq out '())
+  (foreach nm (AS4:tbl-layers)
+    (setq k (AS4:tbl-extract-key nm ltpl))
+    (if k (setq out (cons (cons nm k) out)))
+  )
+  (reverse out)
+)
+
+(defun AS4:tbl-layers-for-key (ltpl key / out lk)
+  (setq out '())
+  (foreach lk (AS4:tbl-layer-keys ltpl)
+    (if (= (cdr lk) key) (setq out (cons (car lk) out)))
+  )
+  (reverse out)
+)
+
+;; ---- link storage (next to the drawing) -------------------------------------
+(defun AS4:tbl-file ( / d)
+  (setq d (getvar "DWGPREFIX"))
+  (if (and d (> (strlen d) 0)) (strcat d "as4cad_tables.dat") nil)
+)
+
+(defun AS4:tbl-slash (s / out i ch)
+  (setq out "" i 1)
+  (while (<= i (strlen s))
+    (setq ch (substr s i 1))
+    (setq out (strcat out (if (= ch "\\") "/" ch)))
+    (setq i (1+ i))
+  )
+  out
+)
+
+;; paths inside the drawing's folder are stored relative to it, so the
+;; whole project folder can be moved or shared
+(defun AS4:tbl-relpath (p / d)
+  (setq p (AS4:tbl-slash p) d (AS4:tbl-slash (getvar "DWGPREFIX")))
+  (if (and (> (strlen d) 0) (>= (strlen p) (strlen d))
+           (= (strcase (substr p 1 (strlen d))) (strcase d)))
+    (substr p (1+ (strlen d)))
+    p)
+)
+
+(defun AS4:tbl-resolve (p / d)
+  (setq p (AS4:tbl-slash p) d (AS4:tbl-slash (getvar "DWGPREFIX")))
+  (if (or (and (>= (strlen p) 2) (= (substr p 2 1) ":")) (= (substr p 1 1) "/"))
+    p
+    (strcat d p))
+)
+
+;; a link = (csvpath keycolumn-name layer-template table-template)
+(defun AS4:tbl-links-load ( / path f line parts out)
+  (setq out '() path (AS4:tbl-file))
+  (if (and path (findfile path))
+    (progn
+      (setq f (open path "r"))
+      (if f
+        (progn
+          (while (setq line (read-line f))
+            (setq parts (AS4:split line (chr 9)))
+            (if (and (= (car parts) "LINK") (>= (length parts) 5))
+              (setq out (cons (list (nth 1 parts) (nth 2 parts) (AS4:tbl-strip-braces (nth 3 parts)) (AS4:tbl-strip-braces (nth 4 parts))) out)))
+          )
+          (close f)
+        )
+      )
+    )
+  )
+  (reverse out)
+)
+
+(defun AS4:tbl-links-save (links / path f l)
+  (setq path (AS4:tbl-file))
+  (if path
+    (progn
+      (setq f (open path "w"))
+      (if f
+        (progn
+          (foreach l links
+            (write-line (strcat "LINK" (chr 9) (nth 0 l) (chr 9) (nth 1 l) (chr 9) (nth 2 l) (chr 9) (nth 3 l)) f))
+          (close f)
+          T
+        )
+      )
+    )
+  )
+)
+
+;; ---- opening a linked table ---------------------------------------------------
+;; returns (headers rows keycol-index index duplicate-keys rows-without-key)
+;; where index = list of (normalized-key . row-number)
+(defun AS4:tbl-open (link / full recs hdrs data kidx i h idx dups rowi row raw k nokey)
+  (setq full (findfile (AS4:tbl-resolve (nth 0 link))))
+  (cond
+    ((not full)
+      (princ (strcat "\nTable file not found: " (nth 0 link))) nil)
+    (T
+      (setq recs (AS4:tbl-read-records full))
+      (if (or (not recs) (< (length recs) 2))
+        (progn (princ (strcat "\nTable file is empty or unreadable: " (nth 0 link))) nil)
+        (progn
+          (setq hdrs (car recs) data (cdr recs) kidx nil i 0)
+          (foreach h hdrs
+            (if (and (not kidx) (= (strcase h) (strcase (nth 1 link)))) (setq kidx i))
+            (setq i (1+ i))
+          )
+          (if (not kidx)
+            (progn
+              (princ (strcat "\nKey column \"" (nth 1 link) "\" not found in " (nth 0 link) " - relink the table."))
+              nil)
+            (progn
+              (setq idx '() dups '() nokey 0 rowi 0)
+              (foreach row data
+                (setq raw (AS4:tbl-cell row kidx))
+                (setq k (AS4:tbl-extract-key raw (nth 3 link)))
+                (cond
+                  ((not k) (setq nokey (1+ nokey)))
+                  ((assoc k idx) (setq dups (cons k dups)))
+                  (T (setq idx (cons (cons k rowi) idx)))
+                )
+                (setq rowi (1+ rowi))
+              )
+              (list hdrs data kidx (reverse idx) (reverse dups) nokey)
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+;; ---- column profile ------------------------------------------------------------
+;; one entry per column: (index name filled uniq type allunique samples)
+;; uniq counting stops at 41 ("many"); type = number / category / text
+(defun AS4:tbl-profile (hdrs data / i m vals seen many num v out row rgb)
+  (setq m (length hdrs) i 0 out '())
+  (while (< i m)
+    (setq vals '() seen '() many nil num T rgb T)
+    (foreach row data
+      (setq v (AS4:tbl-cell row i))
+      (if (> (strlen v) 0)
+        (progn
+          (setq vals (cons v vals))
+          (if (not (AS4:tbl-numeric-p v)) (setq num nil))
+          (if (and rgb (not (AS4:tbl-parse-rgb v))) (setq rgb nil))
+          (if (and (not many) (not (member v seen)))
+            (progn
+              (setq seen (cons v seen))
+              (if (> (length seen) 40) (setq many T))))
+        )
+      )
+    )
+    (setq out
+      (cons
+        (list i (nth i hdrs) (length vals) (if many 41 (length seen))
+              (cond ((= (length vals) 0) "empty")
+                    (rgb "color")
+                    (num "number")
+                    ((not many) "category")
+                    (T "text"))
+              (and (> (length data) 0) (= (length vals) (length data)) (AS4:tbl-all-unique vals))
+              (reverse seen))
+        out))
+    (setq i (1+ i))
+  )
+  (reverse out)
+)
+
+;; true if (almost) every comma-separated token in the column is a value
+;; of the key column - i.e. the column lists other units (stratigraphic
+;; relations such as "lies under", "cuts")
+(defun AS4:tbl-relation-p (data i keyvals / hits tot row v tok n)
+  (setq hits 0 tot 0 n 0)
+  (foreach row data
+    (setq v (AS4:tbl-cell row i))
+    (if (and (> (strlen v) 0) (< n 40))
+      (progn
+        (setq n (1+ n))
+        (foreach tok (AS4:split v ",")
+          (setq tok (AS4:trim tok))
+          (if (> (strlen tok) 0)
+            (progn (setq tot (1+ tot)) (if (member tok keyvals) (setq hits (1+ hits)))))
+        )
+      )
+    )
+  )
+  (and (> tot 0) (>= (* 10 hits) (* 9 tot)))
+)
+
+;; ---- AS4TABLE steps -------------------------------------------------------------
+(defun AS4:tbl-report (link ask / tb idx lkeys used nolay rowlay lk e matched yn)
+  (setq tb (AS4:tbl-open link))
+  (if tb
+    (progn
+      (setq idx (nth 3 tb) lkeys (AS4:tbl-layer-keys (nth 2 link)) used '() nolay '() matched 0)
+      (foreach lk lkeys
+        (if (assoc (cdr lk) idx)
+          (progn
+            (setq matched (1+ matched))
+            (if (not (member (cdr lk) used)) (setq used (cons (cdr lk) used))))
+          (setq nolay (cons (car lk) nolay))
+        )
+      )
+      (setq nolay (reverse nolay) rowlay '())
+      (foreach e idx
+        (if (not (member (car e) used))
+          (setq rowlay (cons (AS4:tbl-cell (nth (cdr e) (nth 1 tb)) (nth 2 tb)) rowlay))))
+      (setq rowlay (reverse rowlay))
+      (princ (strcat "\n=== " (nth 0 link) " ==="))
+      (princ (strcat "\n" (itoa (length (nth 1 tb))) " table row(s), " (itoa (length (nth 0 tb))) " column(s)."))
+      (princ (strcat "\nKey column: " (nth 1 link)
+                     "   table template: " (if (= (nth 3 link) "") "(whole value)" (nth 3 link))
+                     "   layer template: " (if (= (nth 2 link) "") "(whole name)" (nth 2 link))))
+      (if (> (nth 5 tb) 0)
+        (princ (strcat "\n" (itoa (nth 5 tb)) " row(s) have no usable key (empty or not fitting the table template).")))
+      (if (nth 4 tb)
+        (AS4:tbl-print-list "Duplicate keys in the table (only the first row is used)" (nth 4 tb) 15))
+      (princ (strcat "\nLayers fitting the layer template: " (itoa (length lkeys))
+                     "   assigned to a table row: " (itoa matched)
+                     "   table rows with at least one layer: " (itoa (length used)) " of " (itoa (length idx))))
+      (if nolay (AS4:tbl-print-list "Layers fitting the template but with no table row" nolay 25))
+      (if rowlay (AS4:tbl-print-list "Table rows without any layer" rowlay 25))
+      (if (and (= matched 0) (> (length idx) 0))
+        (princ "\nNo layer matched a table row - check the key column and both templates (Link)."))
+      (if ask
+        (progn
+          (initget "No Yes")
+          (setq yn (getkword "\nWrite the list of layers and table rows to a CSV file? [No/Yes] <No>: "))
+          (if (= yn "Yes") (AS4:tbl-report-csv tb lkeys idx used))))
+    )
+  )
+)
+
+(defun AS4:tbl-columns (link / tb)
+  (setq tb (AS4:tbl-open link))
+  (if tb (progn (princ (strcat "\n=== Columns of " (nth 0 link) " ===")) (AS4:tbl-columns-print tb)))
+)
+
+;; numbered overview of every column that has data: number, name,
+;; filled rows, type and a few example values - the numbers are what
+;; Filter / Name refer to
+(defun AS4:tbl-columns-print (tb / prof keyvals row p label nempty)
+  (setq keyvals '() nempty 0)
+  (foreach row (nth 1 tb) (setq keyvals (cons (AS4:tbl-cell row (nth 2 tb)) keyvals)))
+  (setq prof (AS4:tbl-profile (nth 0 tb) (nth 1 tb)))
+  (foreach p prof
+    (if (= (nth 2 p) 0)
+      (setq nempty (1+ nempty))
+      (progn
+        (setq label (nth 4 p))
+        (if (and (/= (nth 0 p) (nth 2 tb)) (member label '("text" "category"))
+                 (AS4:tbl-relation-p (nth 1 tb) (nth 0 p) keyvals))
+          (setq label "relation"))
+        (princ (strcat "\n" (AS4:tbl-pad (itoa (1+ (nth 0 p))) 4)
+                       (AS4:tbl-pad (nth 1 p) 36)
+                       (AS4:tbl-pad (itoa (nth 2 p)) 5)
+                       (AS4:tbl-pad (if (= label "category") (strcat "category (" (itoa (nth 3 p)) ")") label) 15)
+                       (cond
+                         ((= label "category")
+                           (AS4:tbl-oneline (AS4:tbl-join (mapcar '(lambda (s) (AS4:tbl-oneline s 22)) (AS4:tbl-firstn (nth 6 p) 6)) " | ") 100))
+                         ((= label "text")
+                           (AS4:tbl-oneline (car (nth 6 p)) 40))
+                         ((= label "relation") "-> key column")
+                         (T "")
+                       )))
+      )
+    )
+  )
+  (princ (strcat "\n" (itoa nempty) " column(s) without any data not shown."))
+)
+
+;; asks for a column: its number, or part of its name (e.g. "Skel"
+;; lists the columns containing it). Returns the 0-based column index,
+;; 'DONE for a plain Enter, 'AGAIN if the user should be asked again.
+(defun AS4:tbl-ask-column (link tb prof prompt / ans ms p m n)
+  (setq ans (getstring T prompt))
+  (cond
+    ((= ans "") 'DONE)
+    ((= (strcase ans) "L") (AS4:tbl-columns link) 'AGAIN)
+    ((and (AS4:tbl-numeric-p ans) (>= (atoi ans) 1) (<= (atoi ans) (length (nth 0 tb))))
+      (setq n (1- (atoi ans)))
+      (if (= (nth 2 (nth n prof)) 0)
+        (progn (princ "\nThat column has no data.") 'AGAIN)
+        n))
+    (T
+      (setq ms '())
+      (foreach p prof
+        (if (and (> (nth 2 p) 0) (vl-string-search (strcase ans) (strcase (nth 1 p))))
+          (setq ms (cons (nth 0 p) ms))))
+      (setq ms (reverse ms))
+      (cond
+        ((not ms) (princ (strcat "\nNo column name contains \"" ans "\".")) 'AGAIN)
+        ((= (length ms) 1) (car ms))
+        (T
+          (princ (strcat "\n" (itoa (length ms)) " columns contain \"" ans "\" - enter the number of the one you want:"))
+          (foreach m ms (princ (strcat "\n  " (AS4:tbl-pad (itoa (1+ m)) 4) (nth 1 (nth m prof)))))
+          'AGAIN)
+      )
+    )
+  )
+)
+
+(defun AS4:tbl-firstn (lst n / out)
+  (setq out '())
+  (while (and lst (> n 0))
+    (setq out (cons (car lst) out) lst (cdr lst) n (1- n)))
+  (reverse out)
+)
+
+(defun AS4:tbl-show-row (tb rowi / row i h v)
+  (setq row (nth rowi (nth 1 tb)) i 0)
+  (princ (strcat "\n--- Table row: " (AS4:tbl-cell row (nth 2 tb)) " ---"))
+  (foreach h (nth 0 tb)
+    (setq v (AS4:tbl-cell row i))
+    (if (> (strlen v) 0) (princ (strcat "\n  " h ": " (AS4:tbl-oneline v 110))))
+    (setq i (1+ i))
+  )
+)
+
+;; shows a table row and the layers assigned to it; sel = also zoom to
+;; and select everything on those layers
+(defun AS4:tbl-show-hit (link tb key rowi sel / names ss n total pat nm)
+  (AS4:tbl-show-row tb rowi)
+  (setq names (AS4:tbl-layers-for-key (nth 2 link) key) total 0)
+  (if (not names)
+    (princ "\nNo layer is assigned to this row.")
+    (progn
+      (princ (strcat "\nLayer(s) assigned to this row (" (itoa (length names)) "):"))
+      (foreach nm names
+        (setq ss (ssget "X" (list (cons 8 (AS4:wc-escape nm)))))
+        (setq n (if ss (sslength ss) 0) total (+ total n))
+        (princ (strcat "\n  " nm "  (" (itoa n) " object(s))"))
+      )
+      (if (and sel (> total 0))
+        (progn
+          (setq pat (AS4:tbl-join (mapcar 'AS4:wc-escape names) ","))
+          (setq ss (ssget "X" (list (cons 8 pat))))
+          (if ss
+            (progn
+              (AS4:zoom-to-selection ss)
+              (sssetfirst nil ss)
+              (princ (strcat "\nZoomed to and selected " (itoa (sslength ss)) " object(s).")))
+          )
+        )
+      )
+    )
+  )
+)
+
+;; click an object (its layer -> key -> table row), type a key, or
+;; Enter for the current layer
+(defun AS4:tbl-info (links / inp lay l tb k hit key s)
+  (setq inp (AS4:pick-or-text "\nClick an object (its table row), Enter = current layer, or type a key (e.g. 202616_1): "))
+  (cond
+    ((not inp) (princ "\nCancelled."))
+    ((or (= (type inp) 'ENAME) (= inp ""))
+      (setq lay (if (= (type inp) 'ENAME) (cdr (assoc 8 (entget inp))) (getvar "CLAYER")) hit nil)
+      (foreach l links
+        (if (not hit)
+          (progn
+            (setq tb (AS4:tbl-open l) k (AS4:tbl-extract-key lay (nth 2 l)))
+            (if (and tb k (assoc k (nth 3 tb)))
+              (progn (setq hit T) (AS4:tbl-show-hit l tb k (cdr (assoc k (nth 3 tb))) nil))))
+        )
+      )
+      (if (not hit)
+        (princ (strcat "\nLayer \"" lay "\" has no row in the linked table(s)."))))
+    (T
+      (setq hit nil)
+      (foreach l links
+        (if (not hit)
+          (progn
+            (setq tb (AS4:tbl-open l) key nil)
+            (if tb
+              (foreach s (list (AS4:tbl-extract-key inp (nth 2 l)) (AS4:tbl-extract-key inp (nth 3 l)) (AS4:tbl-norm-key inp))
+                (if (and s (not key) (assoc s (nth 3 tb))) (setq key s))))
+            (if key
+              (progn (setq hit T) (AS4:tbl-show-hit l tb key (cdr (assoc key (nth 3 tb))) T))))
+        )
+      )
+      (if (not hit) (princ (strcat "\nNo table row found for \"" inp "\".")))
+    )
+  )
+)
+
+;; ---- remembered defaults (key column + templates) ---------------------------
+;; stored next to the drawing AND in the home directory, so the next Link
+;; (also after Unlink, or in another project) starts from the last choices
+(defun AS4:tbl-defaults-paths ( / d h)
+  (setq d (getvar "DWGPREFIX") h (AS4:home-dir))
+  (list (if (and d (> (strlen d) 0)) (strcat d "as4cad_tabledefaults.dat") nil)
+        (if h (strcat h ".as4cad_tabledefaults.dat") nil))
+)
+
+(defun AS4:tbl-defaults-load ( / p f line parts res)
+  (setq res nil)
+  (foreach p (AS4:tbl-defaults-paths)
+    (if (and p (not res) (findfile p))
+      (progn
+        (setq f (open p "r"))
+        (if f
+          (progn
+            (setq line (read-line f))
+            (close f)
+            (if line
+              (progn
+                (setq parts (AS4:split line (chr 9)))
+                (if (and (= (car parts) "DEFAULT") (>= (length parts) 4))
+                  (setq res (list (nth 1 parts) (AS4:tbl-strip-braces (nth 2 parts)) (AS4:tbl-strip-braces (nth 3 parts)))))))
+          )
+        )
+      )
+    )
+  )
+  res
+)
+
+(defun AS4:tbl-defaults-save (key ltpl ttpl / p f)
+  (foreach p (AS4:tbl-defaults-paths)
+    (if p
+      (progn
+        (setq f (open p "w"))
+        (if f
+          (progn
+            (write-line (strcat "DEFAULT" (chr 9) key (chr 9) ltpl (chr 9) ttpl) f)
+            (close f))))))
+)
+
+;; ---- Link ---------------------------------------------------------------------
+(defun AS4:tbl-link ( / path recs hdrs data prof cands p ans keyname ltpl ttpl sugg k1 kidx links newl shown nm dflt dk dl dt l)
+  (setq path (getfiled "Select the table (CSV)" (getvar "DWGPREFIX") "csv;txt;tsv" 4))
+  (if (not path)
+    (princ "\nCancelled.")
+    (progn
+      (setq recs (AS4:tbl-read-records path))
+      (if (or (not recs) (< (length recs) 2))
+        (princ "\nThe file is empty or could not be read.")
+        (progn
+          (setq hdrs (car recs) data (cdr recs))
+          (setq prof (AS4:tbl-profile hdrs data) cands '())
+          (foreach p prof (if (nth 5 p) (setq cands (cons p cands))))
+          (setq cands (reverse cands))
+          (setq dflt (AS4:tbl-defaults-load) dk nil)
+          (if dflt
+            (foreach nm hdrs
+              (if (and (not dk) (= (strcase nm) (strcase (nth 0 dflt)))) (setq dk nm))))
+          (if (and (not dk) cands) (setq dk (nth 1 (car cands))))
+          (princ (strcat "\n" (itoa (length data)) " row(s), " (itoa (length hdrs)) " column(s) read."))
+          (if cands
+            (progn
+              (princ "\nColumns where every row has a different value (key candidates):")
+              (foreach p cands
+                (princ (strcat "\n  " (AS4:tbl-pad (itoa (1+ (nth 0 p))) 4) (AS4:tbl-pad (nth 1 p) 30)
+                               "e.g. " (AS4:tbl-oneline (car (nth 6 p)) 40)))))
+            (princ "\nNo column has a different value in every row - pick the closest one; duplicates will be reported."))
+          (setq ans (getstring T (strcat "\nKey column - number or name" (if dk (strcat " <" dk ">") "") ": ")))
+          (setq keyname nil)
+          (cond
+            ((and (= ans "") dk) (setq keyname dk))
+            ((and (> (strlen ans) 0) (AS4:tbl-numeric-p ans) (>= (atoi ans) 1) (<= (atoi ans) (length hdrs)))
+              (setq keyname (nth (1- (atoi ans)) hdrs)))
+            (T (foreach nm hdrs (if (and (not keyname) (= (strcase nm) (strcase ans))) (setq keyname nm))))
+          )
+          (if (not keyname)
+            (princ "\nNo such column - cancelled.")
+            (progn
+              (setq kidx (vl-position keyname hdrs))
+              (setq k1 (AS4:tbl-cell (car data) kidx))
+              (princ (strcat "\nFirst value of the key column: " k1))
+              (setq shown 0)
+              (princ "\nSome layer names of this drawing:")
+              (foreach nm (AS4:tbl-layers)
+                (if (and (< shown 8) (/= nm "0") (/= (strcase nm) "DEFPOINTS")
+                         (/= (strcase (substr nm 1 (min 4 (strlen nm)))) "AS4_"))
+                  (progn (princ (strcat "\n  " nm)) (setq shown (1+ shown)))))
+              (setq dl (if dflt (nth 1 dflt) ""))
+              (setq ans (getstring T (strcat "\nLayer name template - ID marks the key part(s), * any part, e.g. ID_ID_*_* "
+                                             (if (/= dl "") (strcat "<" dl "> ") "")
+                                             "(- = whole layer name is the key): ")))
+              (setq ltpl (cond ((= ans "") dl) ((= ans "-") "") (T (AS4:trim ans))))
+              (setq dt (if dflt (nth 2 dflt) ""))
+              (setq sugg (cond
+                           ((and (/= dt "") (AS4:tbl-extract-key k1 dt)) dt)
+                           ((and (/= ltpl "") (AS4:tbl-extract-key k1 ltpl)) ltpl)
+                           (T "")))
+              (cond
+                ((/= sugg "")
+                  (setq ans (getstring T (strcat "\nTemplate for the key column's values <" sugg "> (- = use the whole value): ")))
+                  (setq ttpl (cond ((= ans "") sugg) ((= ans "-") "") (T (AS4:trim ans)))))
+                (T
+                  (setq ttpl "")
+                  (princ "\nThe key column's values are used as they are."))
+              )
+              (setq newl (list (AS4:tbl-relpath path) keyname ltpl ttpl))
+              (setq links '())
+              (foreach l (AS4:tbl-links-load)
+                (if (not (and (= (strcase (car l) T) (strcase (car newl) T)) (= (cadr l) (cadr newl))))
+                  (setq links (cons l links))))
+              (setq links (reverse (cons newl links)))
+              (if (AS4:tbl-links-save links)
+                (princ "\nLink saved next to the drawing (as4cad_tables.dat).")
+                (princ "\nNote: the drawing has not been saved yet - the link could not be stored. Save the drawing and run Link again."))
+              (AS4:tbl-defaults-save keyname ltpl ttpl)
+              (AS4:tbl-report newl nil)
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+;; ---- Report export (layers <-> table rows as a CSV file) --------------------------
+(defun AS4:tbl-q (s / out i ch)
+  (setq out "\"" i 1)
+  (while (<= i (strlen s))
+    (setq ch (substr s i 1))
+    (setq out (strcat out (if (= ch "\"") "\"\"" ch)))
+    (setq i (1+ i))
+  )
+  (strcat out "\"")
+)
+
+(defun AS4:tbl-report-csv (tb lkeys idx used / path f lk e r)
+  (setq path (strcat (getvar "DWGPREFIX") "as4cad_tablereport.csv"))
+  (setq f (open path "w"))
+  (if (not f)
+    (princ "\nCould not write the report file.")
+    (progn
+      (write-line "layer,key,status,table_row" f)
+      (foreach lk lkeys
+        (setq r (assoc (cdr lk) idx))
+        (write-line
+          (strcat (AS4:tbl-q (car lk)) "," (AS4:tbl-q (cdr lk)) ","
+                  (AS4:tbl-q (if r "assigned" "no table row")) ","
+                  (AS4:tbl-q (if r (AS4:tbl-cell (nth (cdr r) (nth 1 tb)) (nth 2 tb)) "")))
+          f))
+      (foreach e idx
+        (if (not (member (car e) used))
+          (write-line
+            (strcat "\"\"," (AS4:tbl-q (car e)) ",\"row without layer\","
+                    (AS4:tbl-q (AS4:tbl-cell (nth (cdr e) (nth 1 tb)) (nth 2 tb))))
+            f)))
+      (close f)
+      (princ (strcat "\nWritten: " path))
+    )
+  )
+)
+
+;; ---- shared helpers for Filter / Name ---------------------------------------
+
+(defun AS4:tbl-pick-link (links / i l n)
+  (if (= (length links) 1)
+    (car links)
+    (progn
+      (setq i 1)
+      (foreach l links
+        (princ (strcat "\n  " (itoa i) "  " (car l)))
+        (setq i (1+ i)))
+      (setq n (getint "\nWhich table <1>: "))
+      (if (not n) (setq n 1))
+      (if (and (>= n 1) (<= n (length links))) (nth (1- n) links) nil)
+    )
+  )
+)
+
+;; list of (row-number layername ...) for every table row that has layers
+(defun AS4:tbl-rowlayers (link tb / out lk r cell)
+  (setq out '())
+  (foreach lk (AS4:tbl-layer-keys (nth 2 link))
+    (setq r (assoc (cdr lk) (nth 3 tb)))
+    (if r
+      (progn
+        (setq cell (assoc (cdr r) out))
+        (if cell
+          (setq out (subst (append cell (list (car lk))) cell out))
+          (setq out (append out (list (list (cdr r) (car lk))))))
+      )
+    )
+  )
+  out
+)
+
+(defun AS4:tbl-value-counts (data i / out v c row)
+  (setq out '())
+  (foreach row data
+    (setq v (AS4:tbl-cell row i))
+    (setq c (assoc v out))
+    (if c
+      (setq out (subst (cons v (1+ (cdr c))) c out))
+      (setq out (append out (list (cons v 1)))))
+  )
+  out
+)
+
+;; selects (and optionally only zooms to) everything on the given layers
+(defun AS4:tbl-select-layers (names zoomonly / ss)
+  (if (not names)
+    (princ "\nNo layers to select.")
+    (progn
+      (setq ss (ssget "X" (list (cons 8 (AS4:tbl-join (mapcar 'AS4:wc-escape names) ",")))))
+      (if (not ss)
+        (princ "\nThe layers contain no objects.")
+        (progn
+          (AS4:zoom-to-selection ss)
+          (if (not zoomonly) (sssetfirst nil ss))
+          (princ (strcat "\n" (if zoomonly "Zoomed to " "Zoomed to and selected ") (itoa (sslength ss))
+                         " object(s) on " (itoa (length names)) " layer(s)."))
+        )
+      )
+    )
+  )
+)
+
+(defun AS4:tbl-all-layers ( / out nm rec)
+  (setq out '() rec (tblnext "LAYER" T))
+  (while rec
+    (setq nm (cdr (assoc 2 rec)))
+    (if (not (vl-string-search "|" nm)) (setq out (cons nm out)))
+    (setq rec (tblnext "LAYER")))
+  (reverse out)
+)
+
+;; ---- Isolate ---------------------------------------------------------------------------------
+;; objects of the given layers in the current space (selection set or nil)
+(defun AS4:tbl-objects-of (names / res chunk n nm)
+  (setq res (ssadd) chunk '() n 0)
+  (foreach nm names
+    (setq chunk (cons (AS4:wc-escape nm) chunk) n (1+ n))
+    (if (>= n 20)
+      (progn (AS4:tbl-ss-merge res chunk) (setq chunk '() n 0))))
+  (if chunk (AS4:tbl-ss-merge res chunk))
+  (if (> (sslength res) 0) res nil)
+)
+
+(defun AS4:tbl-ss-merge (res chunk / ss i)
+  (setq ss (ssget "X" (list (cons 8 (AS4:tbl-join chunk ",")) (cons 410 (getvar "CTAB")))))
+  (if ss
+    (progn
+      (setq i 0)
+      (while (< i (sslength ss))
+        (ssadd (ssname ss i) res)
+        (setq i (1+ i)))))
+  res
+)
+
+;; Isolate = the program's own ISOLATEOBJECTS on the objects of the matching
+;; layers (all other objects of the current space are hidden); UNISOLATEOBJECTS
+;; brings everything back, also outside AS4TABLE. Matching layers that are
+;; switched off are switched on first (Back restores them).
+;; Returns nil if ISOLATEOBJECTS is not available.
+(defun AS4:tbl-isolate-objects (names / ops nm st ss err)
+  (setq ops '())
+  (foreach nm names
+    (setq st (AS4:tbl-layer-get nm))
+    (if (and st (not (nth 1 st))) (setq ops (cons (list nm nil "on" nil) ops))))
+  (if ops (AS4:tbl-layer-apply2 ops nil))
+  (setq ss (AS4:tbl-objects-of names))
+  (cond
+    ((not ss) (princ "\nThe layers contain no objects in the current space.") T)
+    (T
+      (setq err (vl-catch-all-apply '(lambda () (command "_.ISOLATEOBJECTS" ss ""))))
+      (if (vl-catch-all-error-p err)
+        nil
+        (progn
+          (setq *AS4:tbl-objiso* T)
+          (AS4:tbl-select-layers names T)
+          (princ (strcat "\n" (itoa (sslength ss)) " object(s) isolated (ISOLATEOBJECTS). Bring everything back with UNISOLATEOBJECTS or Back."))
+          T)))
+  )
+)
+
+;; the old way: every other layer is switched off
+(defun AS4:tbl-isolate-layers (names / ops cur nm)
+  (setq ops '() cur (getvar "CLAYER"))
+  (foreach nm (AS4:tbl-all-layers)
+    (setq ops (cons (list nm nil (if (member nm names) "on" "off") nil) ops)))
+  (AS4:tbl-layer-apply2 ops (if (member cur names) nil (car names)))
+  (AS4:tbl-select-layers names T)
+  (princ (strcat "\nOnly the " (itoa (length names)) " matching layer(s) are on now (Back restores)."))
+)
+
+;; ---- original layer state (so Isolate can always be undone) ------------------------
+(defun AS4:tbl-state-file ( / d)
+  (setq d (getvar "DWGPREFIX"))
+  (if (and d (> (strlen d) 0)) (strcat d "as4cad_tablestate.dat") nil)
+)
+
+;; entries: (name aci on tc)
+(defun AS4:tbl-state-load ( / path f line parts out)
+  (setq out '() path (AS4:tbl-state-file))
+  (if (and path (findfile path))
+    (progn
+      (setq f (open path "r"))
+      (if f
+        (progn
+          (while (setq line (read-line f))
+            (setq parts (AS4:split line (chr 9)))
+            (if (and (= (car parts) "L") (>= (length parts) 5))
+              (setq out (cons (list (nth 1 parts) (atoi (nth 2 parts)) (= (nth 3 parts) "1")
+                                    (if (= (nth 4 parts) "-") nil (atoi (nth 4 parts)))) out)))
+          )
+          (close f)
+        )
+      )
+    )
+  )
+  (reverse out)
+)
+
+(defun AS4:tbl-state-clayer ( / path f line parts out)
+  (setq out nil path (AS4:tbl-state-file))
+  (if (and path (findfile path))
+    (progn
+      (setq f (open path "r"))
+      (if f
+        (progn
+          (while (setq line (read-line f))
+            (setq parts (AS4:split line (chr 9)))
+            (if (and (= (car parts) "C") (>= (length parts) 2)) (setq out (nth 1 parts))))
+          (close f)))))
+  out
+)
+
+(defun AS4:tbl-state-write (entries clayer / path f e)
+  (setq path (AS4:tbl-state-file))
+  (if path
+    (if (and (not entries) (not clayer))
+      (if (findfile path) (vl-file-delete path))
+      (progn
+        (setq f (open path "w"))
+        (if f
+          (progn
+            (if clayer (write-line (strcat "C" (chr 9) clayer) f))
+            (foreach e entries
+              (write-line (strcat "L" (chr 9) (nth 0 e) (chr 9) (itoa (nth 1 e)) (chr 9)
+                                  (if (nth 2 e) "1" "0") (chr 9) (if (nth 3 e) (itoa (nth 3 e)) "-")) f))
+            (close f)))))
+  )
+)
+
+(defun AS4:tbl-layer-get (nm / e d c)
+  (setq e (tblobjname "LAYER" nm))
+  (if e
+    (progn
+      (setq d (entget e) c (cdr (assoc 62 d)))
+      (list (abs c) (>= c 0) (cdr (assoc 420 d))))
+    nil)
+)
+
+(defun AS4:tbl-layer-put (nm aci on tc / e d)
+  (setq e (tblobjname "LAYER" nm))
+  (if e
+    (progn
+      (setq d (entget e))
+      (setq d (subst (cons 62 (if on aci (- aci))) (assoc 62 d) d))
+      (if (assoc 420 d) (setq d (vl-remove (assoc 420 d) d)))
+      (if tc (setq d (append d (list (cons 420 tc)))))
+      (entmod d)
+    )
+  )
+)
+
+;; ops = list of (layername new-aci-or-nil "on"/"off"/nil true-color-or-nil);
+;; remembers the first-seen original of each layer in
+;; as4cad_tablestate.dat. newclayer = a layer to make current first (the
+;; original current layer is remembered too), or nil.
+(defun AS4:tbl-layer-apply2 (ops newclayer / st op nm cur on cl)
+  (setq st (AS4:tbl-state-load) cl (AS4:tbl-state-clayer))
+  (if newclayer
+    (progn
+      (if (not cl) (setq cl (getvar "CLAYER")))
+      (vl-catch-all-apply 'setvar (list "CLAYER" newclayer))))
+  (foreach op ops
+    (setq nm (car op) cur (AS4:tbl-layer-get nm))
+    (if cur
+      (progn
+        (if (not (assoc nm st))
+          (setq st (append st (list (list nm (nth 0 cur) (nth 1 cur) (nth 2 cur))))))
+        (setq on (cond ((= (nth 2 op) "off") nil) ((= (nth 2 op) "on") T) (T (nth 1 cur))))
+        (AS4:tbl-layer-put nm (if (nth 1 op) (nth 1 op) (nth 0 cur)) on
+                           (cond ((nth 3 op) (nth 3 op)) ((nth 1 op) nil) (T (nth 2 cur))))
+      )
+    )
+  )
+  (AS4:tbl-state-write st cl)
+)
+
+(defun AS4:tbl-restore ( / st e cl wasiso)
+  (setq wasiso *AS4:tbl-objiso*)
+  (if wasiso
+    (progn
+      (vl-catch-all-apply '(lambda () (command "_.UNISOLATEOBJECTS")))
+      (setq *AS4:tbl-objiso* nil)
+      (princ "\nObjects shown again (UNISOLATEOBJECTS).")))
+  (setq st (AS4:tbl-state-load) cl (AS4:tbl-state-clayer))
+  (if st
+    (foreach e st
+      (if (tblsearch "LAYER" (car e))
+        (AS4:tbl-layer-put (nth 0 e) (nth 1 e) (nth 2 e) (nth 3 e)))))
+  (if (and cl (tblsearch "LAYER" cl))
+    (vl-catch-all-apply 'setvar (list "CLAYER" cl)))
+  (AS4:tbl-state-write nil nil)
+  (if st (princ (strcat "\nRestored the original visibility of " (itoa (length st)) " layer(s).")))
+  (if (and (not st) (not wasiso)) (princ "\nNothing to restore."))
+)
+
+;; ---- Filter -------------------------------------------------------------------------------
+(defun AS4:tbl-ask-crit (link tb prof ncrit / n p vals i pick parts tok w lo hi v ans)
+  (setq n (AS4:tbl-ask-column link tb prof
+            (if (= ncrit 0)
+              "\nCriterion 1 - column number or part of its name (L = list columns, Enter = cancel): "
+              (strcat "\nCriterion " (itoa (1+ ncrit)) " (must match as well) - column number or part of its name (L = list columns, Enter = finish): "))))
+  (cond
+    ((eq n 'DONE) 'DONE)
+    ((eq n 'AGAIN) 'AGAIN)
+    (T
+      (setq p (nth n prof))
+      (princ (strcat "\nColumn: " (nth 1 p)))
+      (cond
+        ((= (nth 4 p) "category")
+          (setq vals (AS4:tbl-value-counts (nth 1 tb) n) i 1)
+          (foreach v vals
+            (princ (strcat "\n  " (itoa i) "  " (if (= (car v) "") "(empty)" (AS4:tbl-oneline (car v) 60))
+                           "  (" (itoa (cdr v)) ")"))
+            (setq i (1+ i)))
+          (setq ans (getstring T "\nNumber(s) comma-separated, * = any value, - = empty: "))
+          (setq pick '())
+          (foreach tok (AS4:split ans ",")
+            (setq tok (AS4:trim tok))
+            (cond
+              ((= tok "*") (setq pick (cons "*" pick)))
+              ((= tok "-") (setq pick (cons "-" pick)))
+              ((and (AS4:tbl-numeric-p tok) (>= (atoi tok) 1) (<= (atoi tok) (length vals)))
+                (setq pick (cons (car (nth (1- (atoi tok)) vals)) pick)))
+            )
+          )
+          (if pick (list n "in" pick) (progn (princ "\nNo valid choice.") 'AGAIN)))
+        ((= (nth 4 p) "number")
+          (setq ans (getstring T "\nRange min,max (either may be left empty, decimal point): "))
+          (setq parts (AS4:split ans ","))
+          (setq lo (if (and (nth 0 parts) (> (strlen (AS4:trim (nth 0 parts))) 0)) (AS4:safe-atof (AS4:trim (nth 0 parts))) nil))
+          (setq hi (if (and (nth 1 parts) (> (strlen (AS4:trim (nth 1 parts))) 0)) (AS4:safe-atof (AS4:trim (nth 1 parts))) nil))
+          (if (or lo hi) (list n "range" (list lo hi)) (progn (princ "\nNo range entered.") 'AGAIN)))
+        (T
+          (setq ans (getstring T "\nWord(s) contained in the cell, comma-separated (any of them): "))
+          (setq pick '())
+          (foreach w (AS4:split ans ",")
+            (setq w (AS4:trim w))
+            (if (> (strlen w) 0) (setq pick (cons (strcase w) pick))))
+          (if pick (list n "has" pick) (progn (princ "\nNothing entered.") 'AGAIN)))
+      )
+    )
+  )
+)
+
+;; one criterion in words, e.g.  Befundtyp = Mauer | Grube
+(defun AS4:tbl-crit-text (prof c / p tt lo hi)
+  (setq p (nth (nth 0 c) prof) tt (nth 1 c))
+  (strcat (nth 1 p)
+    (cond
+      ((= tt "in")
+        (strcat " = " (AS4:tbl-join (mapcar '(lambda (v) (cond ((= v "*") "(any value)") ((= v "-") "(empty)") (T (AS4:tbl-oneline v 30))))
+                                            (reverse (nth 2 c))) " | ")))
+      ((= tt "range")
+        (setq lo (car (nth 2 c)) hi (cadr (nth 2 c)))
+        (strcat ": " (if lo (rtos lo 2 4) "...") " to " (if hi (rtos hi 2 4) "...")))
+      (T (strcat " contains " (AS4:tbl-join (reverse (nth 2 c)) " | ")))
+    )
+  )
+)
+
+(defun AS4:tbl-crit-ok (row c / v tt w ok num)
+  (setq v (AS4:tbl-cell row (nth 0 c)) tt (nth 1 c))
+  (cond
+    ((= tt "in")
+      (or (and (member v (nth 2 c)) T)
+          (and (member "*" (nth 2 c)) (> (strlen v) 0))
+          (and (member "-" (nth 2 c)) (= v ""))))
+    ((= tt "has")
+      (setq ok nil)
+      (foreach w (nth 2 c) (if (vl-string-search w (strcase v)) (setq ok T)))
+      ok)
+    ((= tt "range")
+      (if (= v "")
+        nil
+        (progn
+          (setq num (AS4:safe-atof v))
+          (and (or (not (car (nth 2 c))) (>= num (car (nth 2 c))))
+               (or (not (cadr (nth 2 c))) (<= num (cadr (nth 2 c))))))))
+  )
+)
+
+;; -> (matching-row-count layer-names)
+(defun AS4:tbl-filter-result (tb rl crit / rows ri row ok c names e)
+  (setq rows 0 names '() ri 0)
+  (foreach row (nth 1 tb)
+    (setq ok T)
+    (foreach c crit (if (not (AS4:tbl-crit-ok row c)) (setq ok nil)))
+    (if ok
+      (progn
+        (setq rows (1+ rows))
+        (setq e (assoc ri rl))
+        (if e (setq names (append names (cdr e))))))
+    (setq ri (1+ ri))
+  )
+  (list rows names)
+)
+
+(defun AS4:tbl-filter (links / link tb prof rl crit r res act done names i c)
+  (setq link (AS4:tbl-pick-link links))
+  (setq tb (if link (AS4:tbl-open link) nil))
+  (if tb
+    (progn
+      (setq prof (AS4:tbl-profile (nth 0 tb) (nth 1 tb)) rl (AS4:tbl-rowlayers link tb) crit '() r nil)
+      (princ "\nColumns available for filtering (number, name, rows filled, type, example values):")
+      (AS4:tbl-columns-print tb)
+      (princ "\n\nPick one column after the other: every criterion narrows the result (all criteria must match). Enter finishes.")
+      (while (not (eq r 'DONE))
+        (setq r (AS4:tbl-ask-crit link tb prof (length crit)))
+        (if (and r (listp r))
+          (progn
+            (setq crit (append crit (list r)))
+            (setq res (AS4:tbl-filter-result tb rl crit) i 0)
+            (princ "\nCriteria so far (all must match):")
+            (foreach c crit (setq i (1+ i)) (princ (strcat "\n  " (itoa i) "  " (AS4:tbl-crit-text prof c))))
+            (princ (strcat "\n=> " (itoa (car res)) " row(s), " (itoa (length (cadr res))) " layer(s) match. Add another criterion to narrow further, or Enter to finish."))
+          )
+        )
+      )
+      (if (not crit)
+        (princ "\nNo criteria - cancelled.")
+        (progn
+          (setq res (AS4:tbl-filter-result tb rl crit) names (cadr res) done nil)
+          (princ (strcat "\nFilter finished: " (itoa (length crit)) " criteria, " (itoa (car res)) " row(s), " (itoa (length names)) " layer(s)."))
+          (while (not done)
+            (initget "Select Zoom Isolate Offlayers Back eXit S Z I O B X")
+            (setq act (getkword (strcat "\nWhat to do with the " (itoa (length names)) " layer(s) [Select/Zoom/Isolate/Offlayers/Back/eXit] <eXit>: ")))
+            (if (not act) (setq act "eXit"))
+            (cond
+              ((member act (list "Select" "S")) (AS4:tbl-select-layers names nil))
+              ((member act (list "Zoom" "Z")) (AS4:tbl-select-layers names T))
+              ((member act (list "Isolate" "I"))
+                (if (not names)
+                  (princ "\nNo layers match.")
+                  (if (not (AS4:tbl-isolate-objects names))
+                    (progn
+                      (princ "\nISOLATEOBJECTS is not available here - switching the other layers off instead.")
+                      (AS4:tbl-isolate-layers names)))))
+              ((member act (list "Offlayers" "O"))
+                (if (not names) (princ "\nNo layers match.") (AS4:tbl-isolate-layers names)))
+              ((member act (list "Back" "B")) (AS4:tbl-restore))
+              ((member act (list "eXit" "X")) (setq done T))
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+;; ---- RGB-via-column: color the layers with the colors stored in a table column ---------------
+;; every column whose cells are all colors (r,g,b / #RRGGBB / 0xRRGGBB ...)
+;; is offered; the layer of each table row takes the color of that row,
+;; an empty cell = white. Back restores the original colors.
+(defun AS4:tbl-rgb (links / link tb prof rl cols c ans ms cn row tc ops e nm seen s n)
+  (setq link (AS4:tbl-pick-link links))
+  (setq tb (if link (AS4:tbl-open link) nil))
+  (if tb
+    (progn
+      (setq prof (AS4:tbl-profile (nth 0 tb) (nth 1 tb)) cols '())
+      (foreach c prof (if (= (nth 4 c) "color") (setq cols (cons c cols))))
+      (setq cols (reverse cols))
+      (if (not cols)
+        (princ "\nNo column in this table holds color values (r,g,b / #RRGGBB / 0xRRGGBB).")
+        (progn
+          (setq rl (AS4:tbl-rowlayers link tb) cn nil)
+          (princ "\nColumns that hold colors (number, name, rows filled, example):")
+          (foreach c cols
+            (princ (strcat "\n  " (AS4:tbl-pad (itoa (1+ (nth 0 c))) 4) (AS4:tbl-pad (nth 1 c) 36)
+                           (AS4:tbl-pad (itoa (nth 2 c)) 5) (AS4:tbl-oneline (car (nth 6 c)) 30))))
+          (while (not cn)
+            (setq ans (getstring T "\nColor by column - number or part of its name (Enter = cancel): "))
+            (cond
+              ((= ans "") (setq cn -1))
+              ((and (AS4:tbl-numeric-p ans) (= (nth 4 (if (and (>= (atoi ans) 1) (<= (atoi ans) (length prof))) (nth (1- (atoi ans)) prof) '(0 "" 0 0 ""))) "color"))
+                (setq cn (1- (atoi ans))))
+              (T
+                (setq ms '())
+                (foreach c cols (if (vl-string-search (strcase ans) (strcase (nth 1 c))) (setq ms (cons (nth 0 c) ms))))
+                (cond
+                  ((= (length ms) 1) (setq cn (car ms)))
+                  ((> (length ms) 1) (princ "\nSeveral columns match - enter the number."))
+                  (T (princ "\nNo such color column."))
+                )
+              )
+            )
+          )
+          (if (>= cn 0)
+            (progn
+              (setq ops '() seen '() n 0)
+              (foreach e rl
+                (setq row (nth (car e) (nth 1 tb)) s (AS4:tbl-cell row cn))
+                (setq tc (if (= s "") 16777215 (AS4:tbl-parse-rgb s)))
+                (setq s (if (= s "") "(empty) = white" s))
+                (if (not (assoc s seen)) (setq seen (append seen (list (cons s 0)))))
+                (setq seen (subst (cons s (1+ (cdr (assoc s seen)))) (assoc s seen) seen))
+                (foreach nm (cdr e) (setq ops (cons (list nm 7 nil tc) ops) n (1+ n)))
+              )
+              (AS4:tbl-layer-apply2 ops nil)
+              (princ (strcat "\nColors from column \"" (nth 1 (nth cn prof)) "\":"))
+              (foreach c seen (princ (strcat "\n  " (AS4:tbl-pad (car c) 20) (itoa (cdr c)) " table row(s)")))
+              (princ (strcat "\nColored " (itoa n) " layer(s) (Back restores the original colors)."))
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+;; ---- Name: rename layers from the table -------------------------------------------------------
+;; splits a rename template into (separator parts). Text between two
+;; asterisks is fixed text and may itself contain separators: *my test*_2_6
+(defun AS4:tbl-name-parse (tpl / i n ch inq sep tok toks)
+  (setq tpl (AS4:tbl-strip-braces tpl) n (strlen tpl) i 1 inq nil sep nil)
+  (while (<= i n)
+    (setq ch (substr tpl i 1))
+    (cond
+      (inq (if (= ch "*") (setq inq nil)))
+      ((and (= ch "*") (vl-string-search "*" tpl i)) (setq inq T))
+      ((and (not sep) (vl-string-search ch "_-. /|:;")) (setq sep ch))
+    )
+    (setq i (1+ i))
+  )
+  (setq i 1 inq nil tok "" toks '())
+  (while (<= i n)
+    (setq ch (substr tpl i 1))
+    (cond
+      (inq (setq tok (strcat tok ch)) (if (= ch "*") (setq inq nil)))
+      ((and (= ch "*") (vl-string-search "*" tpl i)) (setq inq T tok (strcat tok ch)))
+      ((and sep (= ch sep)) (setq toks (cons tok toks) tok ""))
+      (T (setq tok (strcat tok ch)))
+    )
+    (setq i (1+ i))
+  )
+  (list sep (reverse (cons tok toks)))
+)
+
+;; fixed text of a *text* part, or nil
+(defun AS4:tbl-quoted (p)
+  (if (and (>= (strlen p) 3) (= (substr p 1 1) "*") (= (substr p (strlen p) 1) "*"))
+    (substr p 2 (- (strlen p) 2))
+    nil)
+)
+
+;; expands a name template for one layer. The template is a list of parts
+;; separated by one separator character (default: the layer name's own):
+;;   7      = value of table column 7 (numbers as shown by Columns)
+;;   L2     = 2nd part of the old layer name
+;;   *text* = fixed text (may contain separators), also =text, and any
+;;            other word is taken literally, too
+;; e.g. L1_L2_7_9 -> old parts 1 and 2, then columns 7 and 9, joined with _.
+;; Returns nil if a part cannot be filled (e.g. the table cell is empty).
+(defun AS4:tbl-expand (tpl old sep row / tsep toks old-toks out p v num ok first pr)
+  (setq pr (AS4:tbl-name-parse tpl) tsep (car pr) toks (cadr pr))
+  (if (not tsep) (setq tsep sep))
+  (setq old-toks (AS4:split old sep) out "" ok T first T)
+  (foreach p toks
+    (cond
+      ((not ok))
+      ((AS4:tbl-quoted p) (setq v (AS4:tbl-quoted p)))
+      ((and (> (strlen p) 0) (= (substr p 1 1) "=")) (setq v (substr p 2)))
+      ((and (> (strlen p) 1) (= (strcase (substr p 1 1)) "L") (AS4:is-integer-str (substr p 2)))
+        (setq num (atoi (substr p 2)) v (if (>= num 1) (nth (1- num) old-toks) nil))
+        (if (not v) (setq ok nil)))
+      ((AS4:is-integer-str p)
+        (setq num (atoi p) v (if (>= num 1) (nth (1- num) row) nil))
+        (if (not (and v (> (strlen v) 0))) (setq ok nil)))
+      (T (setq v p))
+    )
+    (if ok
+      (progn
+        (setq out (if first v (strcat out tsep v)) first nil))))
+  (if ok out nil)
+)
+
+;; replaces characters that are not allowed in layer names
+(defun AS4:tbl-clean-name (s / out i ch)
+  (setq out "" i 1)
+  (while (<= i (strlen s))
+    (setq ch (substr s i 1))
+    (setq out (strcat out (if (vl-string-search ch "<>/\\\":;?*|,=`") "-" ch)))
+    (setq i (1+ i))
+  )
+  (AS4:trim out)
+)
+
+;; moves every object (all layouts) from one layer to another; returns the count
+(defun AS4:tbl-move-layer (from to / ss i e d n)
+  (setq ss (ssget "X" (list (cons 8 (AS4:wc-escape from)))) n 0)
+  (if ss
+    (progn
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq e (ssname ss i) d (entget e))
+        (if (not (vl-catch-all-error-p (vl-catch-all-apply 'entmod (list (subst (cons 8 to) (assoc 8 d) d)))))
+          (setq n (1+ n)))
+        (setq i (1+ i))
+      )
+    )
+  )
+  n
+)
+
+(defun AS4:tbl-rename-layer (old new)
+  (vl-catch-all-apply '(lambda () (command "_.-RENAME" "_LA" old new)))
+  (and (tblsearch "LAYER" new) (not (tblsearch "LAYER" old)))
+)
+
+;; singles = list of (old new); groups = list of (new (old1 old2 ...) target-exists)
+;; a group is several layers that get the same new name: they are merged
+;; (one is renamed, or all are moved into the already existing layer; the
+;; emptied layers are purged if nothing else uses them)
+(defun AS4:tbl-name-apply (singles groups extra / logpath f p g ok fail merged gone left cmdecho rest tgt m x)
+  (setq logpath (strcat (getvar "DWGPREFIX") "as4cad_layerrename_" (vl-string-subst "" "." (rtos (getvar "CDATE") 2 6)) ".csv"))
+  (setq f (open logpath "w"))
+  (if f
+    (progn
+      (write-line "old,new,action" f)
+      (foreach p singles (write-line (strcat (AS4:tbl-q (car p)) "," (AS4:tbl-q (cadr p)) ",\"rename\"") f))
+      (foreach g groups
+        (foreach m (cadr g)
+          (write-line (strcat (AS4:tbl-q m) "," (AS4:tbl-q (car g)) ",\"merge\"") f)))
+      (foreach x extra (write-line x f))
+      (close f)
+      (princ (strcat "\nLog written (Name > Revert undoes the renames, not the merges): " logpath))
+    )
+    (princ "\nWarning: the log file could not be written.")
+  )
+  (setq cmdecho (getvar "CMDECHO") ok 0 fail 0 merged 0 gone 0 left 0)
+  (setvar "CMDECHO" 0)
+  (foreach p singles
+    (if (AS4:tbl-rename-layer (car p) (cadr p)) (setq ok (1+ ok)) (setq fail (1+ fail))))
+  (foreach g groups
+    (setq tgt (car g) rest (cadr g))
+    (if (not (tblsearch "LAYER" tgt))
+      (if (AS4:tbl-rename-layer (car rest) tgt)
+        (setq ok (1+ ok) rest (cdr rest))
+        (setq fail (1+ fail) rest nil)))
+    (foreach m rest
+      (setq merged (+ merged (AS4:tbl-move-layer m tgt)))
+      (vl-catch-all-apply '(lambda () (command "_.-PURGE" "_LA" (AS4:wc-escape m) "_N")))
+      (if (tblsearch "LAYER" m) (setq left (1+ left)) (setq gone (1+ gone))))
+  )
+  (setvar "CMDECHO" cmdecho)
+  (princ (strcat "\n" (itoa ok) " layer(s) renamed"
+                 (if (> fail 0) (strcat ", " (itoa fail) " could not be renamed") "")
+                 (if (> (+ gone left) 0) (strcat "; merged " (itoa (+ gone left)) " layer(s) into others (" (itoa merged) " object(s) moved)") "")
+                 (if (> left 0) (strcat "; " (itoa left) " emptied layer(s) could not be deleted - remove them with PURGE") "")
+                 "."))
+  (list ok fail)
+)
+
+;; After Rename the layer names have a new structure, so the link's layer
+;; template must follow - otherwise no layer would be found for a table
+;; row any more. Builds the template that fits the names produced by the
+;; rename template tpl (ID stays ID, Ln takes the n-th part of the old
+;; template, other columns and fixed text become *). Returns a new link
+;; (path key-column layer-template table-template) or nil.
+(defun AS4:tbl-derive-link (link tb tpl / tsep toks oldl oldsep oldtoks ttpl kcol out p num k vals row ok pr q)
+  (setq oldl (nth 2 link) ttpl (nth 3 link) kcol (1+ (nth 2 tb)))
+  (setq pr (AS4:tbl-name-parse tpl) tsep (car pr) toks (cadr pr))
+  (setq oldsep (AS4:tbl-tpl-sep oldl))
+  (setq oldtoks (cond ((= oldl "") nil) (oldsep (AS4:split oldl oldsep)) (T (list oldl))))
+  (cond
+    ((and (= (length toks) 1) (AS4:is-integer-str (car toks)))
+      (setq num (atoi (car toks)))
+      (cond
+        ((= num kcol) (list (nth 0 link) (nth 1 link) ttpl ttpl))
+        ((and (>= num 1) (<= num (length (nth 0 tb))))
+          ;; the names are now the values of another column: it becomes the key column
+          (setq vals '() ok T)
+          (foreach row (nth 1 tb)
+            (setq k (AS4:tbl-cell row (1- num)))
+            (if (= k "") (setq ok nil) (setq vals (cons k vals))))
+          (if (and ok vals (AS4:tbl-all-unique vals))
+            (list (nth 0 link) (nth (1- num) (nth 0 tb)) "" "")
+            nil))
+        (T nil))
+    )
+    (T
+      (setq out '())
+      (foreach p toks
+        (setq out
+          (cons
+            (cond
+              ((setq q (AS4:tbl-quoted p))
+                ;; fixed text: as many * as the text has parts
+                (AS4:tbl-join (mapcar '(lambda (x) "*") (if tsep (AS4:split q tsep) (list q))) (if tsep tsep "_")))
+              ((and (> (strlen p) 1) (= (strcase (substr p 1 1)) "L") (AS4:is-integer-str (substr p 2)))
+                (setq num (atoi (substr p 2)))
+                (if (and (>= num 1) (<= num (length oldtoks))) (nth (1- num) oldtoks) "*"))
+              ((and (AS4:is-integer-str p) (= (atoi p) kcol))
+                (if (= ttpl "") "ID" ttpl))
+              (T "*"))
+            out)))
+      (list (nth 0 link) (nth 1 link) (AS4:tbl-join (reverse out) (if tsep tsep "_")) ttpl)
+    )
+  )
+)
+
+;; how many of the names do NOT find their table row with the (new) link
+(defun AS4:tbl-names-misfit (newlink names / tb2 n nm k)
+  (setq tb2 (AS4:tbl-open newlink) n 0)
+  (if (not tb2)
+    (length names)
+    (progn
+      (foreach nm names
+        (setq k (AS4:tbl-extract-key nm (nth 2 newlink)))
+        (if (not (and k (assoc k (nth 3 tb2)))) (setq n (1+ n))))
+      n
+    )
+  )
+)
+
+;; replaces one stored link by another; T if the old one was found
+(defun AS4:tbl-link-replace (oldl newl / out l done)
+  (setq out '() done nil)
+  (foreach l (AS4:tbl-links-load)
+    (if (and (not done) (equal l oldl))
+      (setq out (cons newl out) done T)
+      (setq out (cons l out))))
+  (if done (AS4:tbl-links-save (reverse out)))
+  done
+)
+
+;; log line that lets Revert restore the link
+(defun AS4:tbl-link-logrow (oldl newl)
+  (strcat (AS4:tbl-q (nth 0 oldl)) "," (AS4:tbl-q (nth 1 oldl)) ",\"link\","
+          (AS4:tbl-q (nth 2 oldl)) "," (AS4:tbl-q (nth 3 oldl)) ","
+          (AS4:tbl-q (nth 1 newl)) "," (AS4:tbl-q (nth 2 newl)) "," (AS4:tbl-q (nth 3 newl)))
+)
+
+;; Which table column do the layer names look like? (whole layer name = cell
+;; value). -> (column-index number-of-layers) of the best column, or nil.
+(defun AS4:tbl-detect-key (tb / keys i n best bestn cells row k m)
+  (setq keys (mapcar 'AS4:tbl-norm-key (AS4:tbl-layers)) best nil bestn 0 i 0 m (length (nth 0 tb)))
+  (while (< i m)
+    (setq cells '())
+    (foreach row (nth 1 tb)
+      (setq k (AS4:tbl-cell row i))
+      (if (> (strlen k) 0) (setq cells (cons (AS4:tbl-norm-key k) cells))))
+    (setq n 0)
+    (foreach k keys (if (member k cells) (setq n (1+ n))))
+    (if (> n bestn) (setq best i bestn n))
+    (setq i (1+ i))
+  )
+  (if best (list best bestn) nil)
+)
+
+;; the link finds (almost) no layers: show what the layer names look like and
+;; let the user give the layer template right here; returns the (new) link
+(defun AS4:tbl-fix-template (link tb / names ans newlink rl m done e)
+  (setq names (AS4:tbl-layers) done nil)
+  (princ "\nLayer names in the drawing (first ones):")
+  (princ (strcat "\n  " (AS4:tbl-join (AS4:tbl-firstn names 8) ", ")))
+  (princ (strcat "\nCurrent layer template of the link: " (AS4:tbl-tplshow (nth 2 link)) "  (key column " (nth 1 link) ")"))
+  (while (not done)
+    (setq ans (getstring T "\nLayer name template for this link (e.g. ID_ID_*_*, - = whole name, Enter = keep): "))
+    (if (= ans "")
+      (setq done T)
+      (progn
+        (setq ans (if (= ans "-") "" (AS4:tbl-strip-braces ans)))
+        (setq newlink (list (nth 0 link) (nth 1 link) ans (nth 3 link)))
+        (setq rl (AS4:tbl-rowlayers newlink tb) m 0)
+        (foreach e rl (setq m (+ m (length (cdr e)))))
+        (princ (strcat "\n" (itoa m) " layer(s) find their table row with this template."))
+        (if (> m 0)
+          (progn
+            (initget "Yes No")
+            (if (/= (getkword "\nKeep this template for the link? [Yes/No] <Yes>: ") "No")
+              (progn (AS4:tbl-link-replace link newlink) (setq link newlink done T)))))
+      )
+    )
+  )
+  link
+)
+
+(defun AS4:tbl-tplshow (x)
+  (if (= x "") "(whole name)" x)
+)
+
+(defun AS4:tbl-name (links / link tb rl sep ans tpl kidx kind pairs singles groups unchanged bad e row new old c yn recs r done key members ex c2 allnew newlink mis res lrows x det matched total)
+  (initget "Rename reVert")
+  (setq kind (getkword "\nLayer names [Rename/reVert] <Rename>: "))
+  (if (not kind) (setq kind "Rename"))
+  (cond
+    ((member kind (list "reVert" "Revert" "V"))
+      (setq ans (getfiled "Select a rename log" (getvar "DWGPREFIX") "csv" 4))
+      (if ans
+        (progn
+          (setq recs (AS4:tbl-read-records ans) pairs '() lrows '())
+          (foreach r (cdr recs)
+            (if (= (nth 2 r) "link") (setq lrows (cons r lrows))))
+          (foreach r (cdr recs)
+            (if (and (nth 0 r) (nth 1 r) (not (member (nth 2 r) '("merge" "link")))
+                     (tblsearch "LAYER" (nth 1 r)) (not (tblsearch "LAYER" (nth 0 r))))
+              (setq pairs (cons (list (nth 1 r) (nth 0 r)) pairs))))
+          (if pairs
+            (progn
+              (setq pairs (reverse pairs))
+              (AS4:tbl-print-list "Revert (current name -> name before)" (mapcar '(lambda (c) (strcat (car c) " -> " (cadr c))) pairs) 40)
+              (initget "No Yes")
+              (setq yn (getkword (strcat "\nRevert " (itoa (length pairs)) " layer name(s)? [No/Yes] <No>: ")))
+              (if (/= yn "Yes")
+                (princ "\nNothing changed.")
+                (progn
+              (setq res (AS4:tbl-name-apply pairs nil nil))
+              (if (and lrows (= (cadr res) 0))
+                (foreach r lrows
+                  (while (< (length r) 8) (setq r (append r (list ""))))
+                  (setq r (mapcar '(lambda (x) (if x x "")) r))
+                  (if (AS4:tbl-link-replace (list (nth 0 r) (nth 5 r) (nth 6 r) (nth 7 r))
+                                            (list (nth 0 r) (nth 1 r) (nth 3 r) (nth 4 r)))
+                    (princ (strcat "\nLink restored: layer template " (AS4:tbl-tplshow (nth 3 r)) " (key column " (nth 1 r) ")."))))
+              )
+                ))
+            )
+            (princ "\nNothing to revert (the new names no longer exist, or the old names are taken)."))
+        )
+      )
+    )
+    (T
+      (setq link (AS4:tbl-pick-link links))
+      (setq tb (if link (AS4:tbl-open link) nil))
+      (if tb
+        (progn
+          (setq rl (AS4:tbl-rowlayers link tb))
+          (setq total (length (AS4:tbl-layers)) matched 0)
+          (foreach e rl (setq matched (+ matched (length (cdr e)))))
+          (princ (strcat "\n" (itoa matched) " of " (itoa total) " layers belong to table rows via the current link."))
+          ;; layer names that no longer fit the link (renamed elsewhere, link made before) -> offer a better one
+          (if (< (* 2 matched) total)
+            (progn
+              (setq det (AS4:tbl-detect-key tb))
+              (if (and det (>= (cadr det) 2) (> (cadr det) matched))
+                (progn
+                  (initget "No Yes")
+                  (setq yn (getkword (strcat "\nMost layer names look like values of column \"" (nth (car det) (nth 0 tb)) "\" (" (itoa (cadr det)) " layers). Use that column as key with the whole layer name for this link? [No/Yes] <No>: ")))
+                  (if (= yn "Yes")
+                    (progn
+                      (setq newlink (list (nth 0 link) (nth (car det) (nth 0 tb)) "" ""))
+                      (AS4:tbl-link-replace link newlink)
+                      (setq link newlink tb (AS4:tbl-open link) rl (AS4:tbl-rowlayers link tb))
+                      (princ "\nLink updated.")))
+                )
+              )
+            )
+          )
+          (setq matched 0)
+          (foreach e rl (setq matched (+ matched (length (cdr e)))))
+          (if (< (* 2 matched) total)
+            (setq link (AS4:tbl-fix-template link tb) rl (AS4:tbl-rowlayers link tb)))
+          (setq sep (AS4:tbl-tpl-sep (nth 2 link)))
+          (if (not sep) (setq sep "_"))
+          (setq kidx (nth 2 tb) tpl nil)
+          (princ "\nColumns of the table (number, name, ...):")
+          (AS4:tbl-columns-print tb)
+          (while (not tpl)
+            (setq ans (getstring T (strcat "\nNew layer name: a column number, or parts joined with _ : a number = table column, L1 L2 ... = parts of the old name, *text* = fixed text"
+                                           "\n  e.g. " (itoa (1+ kidx)) "  or  L1_L2_9  or  *test*_2_6   (L = list columns, Enter = key column) : ")))
+            (cond
+              ((= ans "") (setq tpl (itoa (1+ kidx))))
+              ((= (strcase ans) "L") (AS4:tbl-columns link))
+              ((AS4:is-integer-str ans) (setq tpl ans))
+              (T (setq tpl ans))
+            )
+          )
+          (setq pairs '() unchanged 0 bad '() allnew '())
+          (foreach e rl
+            (setq row (nth (car e) (nth 1 tb)))
+            (foreach old (cdr e)
+              (setq new (AS4:tbl-expand tpl old sep row))
+              (if new (setq new (AS4:tbl-clean-name new)))
+              (if (and new (/= new "")) (setq allnew (cons new allnew)))
+              (cond
+                ((or (not new) (= new "")) (setq bad (cons (strcat old "  (a placeholder is empty/unknown)") bad)))
+                ((= (strcase new) (strcase old)) (setq unchanged (1+ unchanged)))
+                (T (setq pairs (cons (list old new) pairs)))
+              )
+            )
+          )
+          (setq pairs (reverse pairs) singles '() groups '() done '())
+          ;; layers that get the same new name (or a name that already exists) are merged
+          (foreach c pairs
+            (setq key (strcase (cadr c)))
+            (if (not (member key done))
+              (progn
+                (setq done (cons key done) members '())
+                (foreach c2 pairs (if (= (strcase (cadr c2)) key) (setq members (cons (car c2) members))))
+                (setq members (reverse members) ex (if (tblsearch "LAYER" (cadr c)) T nil))
+                (if (and (= (length members) 1) (not ex))
+                  (setq singles (cons c singles))
+                  (setq groups (cons (list (cadr c) members ex) groups)))
+              )
+            )
+          )
+          (setq singles (reverse singles) groups (reverse groups))
+          (princ (strcat "\n" (itoa (length singles)) " layer(s) will be renamed, " (itoa unchanged) " already match."))
+          (if singles (AS4:tbl-print-list "Rename (old -> new)" (mapcar '(lambda (c) (strcat (car c) " -> " (cadr c))) singles) 40))
+          (if groups
+            (AS4:tbl-print-list
+              "Merge (several layers -> one layer; objects are moved, emptied layers deleted, merging cannot be reverted)"
+              (mapcar '(lambda (g) (strcat (AS4:tbl-join (cadr g) ", ") " -> " (car g) (if (nth 2 g) "  (existing layer)" ""))) groups)
+              25))
+          (if bad (AS4:tbl-print-list "Skipped, new name could not be built" (reverse bad) 20))
+          ;; the link has to follow the new naming, otherwise the table would find no layers
+          (setq newlink nil)
+          (if (and allnew (or singles groups))
+            (progn
+              (setq newlink (AS4:tbl-derive-link link tb tpl))
+              (cond
+                ((not newlink)
+                  (princ "\nNote: the link cannot follow this naming - afterwards use Link again with a matching layer template."))
+                ((equal newlink link) (setq newlink nil))
+                ((> (setq mis (AS4:tbl-names-misfit newlink allnew)) 0)
+                  (princ (strcat "\nNote: " (itoa mis) " of the new names would not find their table row with an adapted template - the link stays as it is, use Link again afterwards."))
+                  (setq newlink nil))
+                (T
+                  (princ (strcat "\nThe link follows the rename: layer template " (AS4:tbl-tplshow (nth 2 link)) " -> " (AS4:tbl-tplshow (nth 2 newlink))
+                                 (if (/= (nth 1 link) (nth 1 newlink)) (strcat ", key column " (nth 1 link) " -> " (nth 1 newlink)) "")
+                                 " (Revert restores it).")))
+              )
+            )
+          )
+          (if (or singles groups)
+            (progn
+              (initget "No Yes")
+              (setq yn (getkword (strcat "\nApply " (itoa (length singles)) " rename(s) and " (itoa (length groups)) " merge(s)? [No/Yes] <No>: ")))
+              (if (= yn "Yes")
+                (progn
+                  (setq res (AS4:tbl-name-apply singles groups (if newlink (list (AS4:tbl-link-logrow link newlink)) nil)))
+                  (if newlink
+                    (if (= (cadr res) 0)
+                      (if (AS4:tbl-link-replace link newlink)
+                        (princ "\nLink updated - the table works with the new layer names."))
+                      (princ "\nSome renames failed - the link was not changed; check the names and use Link again if needed.")))
+                )
+                (princ "\nNothing changed."))
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+(defun c:AS4TABLE ( / kw done links n i l x keep)
+  (if (not (AS4:tbl-file))
+    (princ "\nSave the drawing first - table links are stored next to it.")
+    (progn
+      (setq done nil)
+      (while (not done)
+        (initget "Link Report Columns Filter RGB-via-column Name Info Back Unlink eXit L R C F G N I B U X")
+        (setq kw (getkword "\nAS4CAD table [Link/Report/Columns/Filter/RGB-via-column/Name/Info/Back/Unlink/eXit] <eXit>: "))
+        (if (not kw) (setq kw "eXit"))
+        (setq links (AS4:tbl-links-load))
+        (cond
+          ((member kw (list "Link" "L")) (AS4:tbl-link))
+          ((member kw (list "eXit" "X")) (setq done T))
+          ((member kw (list "Back" "B")) (AS4:tbl-restore))
+          ((not links) (princ "\nNo table linked yet - use Link first."))
+          ((member kw (list "Report" "R")) (foreach l links (AS4:tbl-report l T)))
+          ((member kw (list "Columns" "C")) (foreach l links (AS4:tbl-columns l)))
+          ((member kw (list "Filter" "F")) (AS4:tbl-filter links))
+          ((member kw (list "RGB-via-column" "G")) (AS4:tbl-rgb links))
+          ((member kw (list "Name" "N")) (AS4:tbl-name links))
+          ((member kw (list "Info" "I")) (AS4:tbl-info links))
+          ((member kw (list "Unlink" "U"))
+            (setq i 1)
+            (foreach l links (princ (strcat "\n  " (itoa i) "  " (car l) "  (key: " (cadr l) ")")) (setq i (1+ i)))
+            (setq n (getint "\nNumber of the link to remove <cancel>: "))
+            (if (and n (>= n 1) (<= n (length links)))
+              (progn
+                (setq i 0 keep '())
+                (foreach x links (setq i (1+ i)) (if (/= i n) (setq keep (cons x keep))))
+                (AS4:tbl-links-save (reverse keep))
+                (princ "\nLink removed (the table file itself is untouched; the templates stay remembered for the next Link).")))
+          )
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+;; =========================================================================
 ;; AS4INFO: lists every AS4CAD command with a letter, then prints a short
 ;; description for the letter entered. Uses getstring rather than
 ;; getkword/initget deliberately - AutoCAD has many single-letter command
@@ -3240,22 +5278,23 @@
 ;; same autocomplete-dropdown collision problem documented elsewhere in
 ;; this file for whole-word keywords - getstring has no such dropdown.
 ;; =========================================================================
-(defun c:AS4INFO ( / cmds descs choice idx)
+(defun c:AS4INFO ( / cmds descs choice idx c)
   (setq cmds (list
     "AS4IMPORT" "AS4NET" "AS4SELECTLAYER" "AS4SELECTXDATA"
-    "AS4SETTINGS" "AS4STATUS" "AS4TAGFROMLAYER"
+    "AS4SETTINGS" "AS4STATUS" "AS4TABLE" "AS4TAGFROMLAYER"
     "AS4XPORT" "AS4ZOOM"
   ))
   (setq descs (list
     "Reads an ArchSurv delimited text file and builds the classified drawing - point symbols, lines/polygons, posthole circles, all attributed. Usage: run it, select the text file, review the command-line summary."
     "The only entry point for the reference survey grid - a menu with 2 steps: Grid (draws crosses at round coordinates over a picked window) and Label (labels selected points with their X/Y coordinates). Usage: run it, type the first letter of the step you want (G/L), repeat as needed, X to exit."
-    "Zooms to and selects every object, of any type, on a layer matching a wildcard pattern (* = any characters, ? = one character - Layer Panel search box syntax). Usage: run it, type a pattern (e.g. *193* or AS4_*)."
-    "Zooms to and selects every object belonging to one or several (comma-separated) feature IDs/codes, across all layers, via block attribute/Xdata - not layer name. Usage: run it, type an ID (e.g. 40), a code (e.g. VF), or several separated by commas (e.g. 4,12,VF,FUND)."
+    "Zooms to and selects every object, of any type, on a layer matching a wildcard pattern (* = any characters, ? = one character; comma-separated for several layers). Usage: run it, then click an object (its layer), press Enter (current layer), or type pattern(s) (e.g. *193* or *193*,AS4_*)."
+    "Zooms to and selects every object belonging to one or several (comma-separated) feature IDs/codes, across all layers, via block attribute/Xdata - not layer name. Usage: run it, then click an object (its ID, or its code if it has no ID), press Enter (all AS4 objects on the current layer), or type ID(s)/code(s), comma-separated (e.g. 40 or 4,12,VF,FUND)."
     "The only entry point for configuration - a menu with 6 steps: Layerstructure, Vector, Symbol, Text, Export (defaults), Default (factory reset). Usage: run it, type the first letter of the step you want (L/V/S/T/E/D), repeat as needed, X to exit."
     "Prints the AS4CAD version and every current setting to the command line. Usage: just run it, no prompts."
+    "Links an external table (e.g. a CSV exported from the excavation database; delimiter auto-detected) to the layers via an ID read out of the layer names; the file is re-read on every use, so overwriting it updates everything. A menu with 9 steps: Link (file, key column, layer-name template such as ID_ID_*_*; remembered for next time), Report (matching, optional CSV list), Columns (overview), Filter (several criteria, then Select/Zoom/Isolate = ISOLATEOBJECTS on the matching layers, or Offlayers = all other layers off), RGB-via-column (colors the layers with the color values stored in a table column, empty = white), Name (rename layers from table columns; layers that get the same name are merged; with preview, log and reVert), Info (click an object or type a key: shows the table row and its layers), Back (UNISOLATEOBJECTS, restore visibility and colors), Unlink. Usage: run it, type the first letter of the step (L/R/C/F/G/N/I/B/U), X to exit."
     "Bulk-scans lines/polygons with no AS4CAD attributes and derives ID/code from their layer name (e.g. lines traced over a photogrammetry mesh). Usage: run it, select objects or Enter for the whole drawing, review the summary, confirm."
     "The only entry point for exporting - a menu with 2 steps: Csv (point symbols, Raw or full Schema) and GeoJson (points and lines/polygons together, geometry and attributes in one; optionally mirrors polygons as an additional polyline feature, like AS4QGIS's own mirror option). Usage: run it, type the first letter of the step you want (C/G), repeat as needed, X to exit."
-    "Zooms to every object matching a search term, without selecting them - a term containing * or ? is matched as a layer name pattern (any entity type); anything else as a feature ID or code (block attribute/Xdata). Usage: run it, type an ID (e.g. 40), a code (e.g. VF), or a layer pattern (e.g. *193*)."
+    "Zooms to every object matching a search term, without selecting them - a term containing * or ? is matched as a layer name pattern (any entity type); anything else as a feature ID or code (block attribute/Xdata). Usage: run it, then click an object (its ID/code, or its layer if it has none), press Enter (current layer), or type ID(s)/code(s) (e.g. 40, VF) or layer pattern(s) with * or ? (e.g. *193*)."
   ))
 
   (princ "\nAS4CAD Commands:")
@@ -3277,6 +5316,5 @@
   (princ)
 )
 
-
-(princ (strcat "\nAS4CAD v" *AS4:VERSION* " loaded. Commands: AS4IMPORT, AS4NET, AS4SELECTLAYER, AS4SELECTXDATA, AS4SETTINGS, AS4STATUS, AS4TAGFROMLAYER, AS4XPORT, AS4ZOOM, AS4INFO. Type AS4INFO for a full command list with descriptions."))
+(princ (strcat "\nAS4CAD v" *AS4:VERSION* " loaded. Commands: AS4IMPORT, AS4NET, AS4SELECTLAYER, AS4SELECTXDATA, AS4SETTINGS, AS4STATUS, AS4TABLE, AS4TAGFROMLAYER, AS4XPORT, AS4ZOOM, AS4INFO. Type AS4INFO for a full command list with descriptions."))
 (princ)

@@ -5,6 +5,8 @@
 It reads the same delimited-text exports and the same 10-character ArchSurv point-ID scheme as AS4QGIS Synthesis, and builds a fully classified drawing: points as styled, attributed block symbols; lines and polygons as true 3D geometry; posthole buffers as generated circles; everything carrying the same attribute set AS4QGIS would produce, stored both as Xdata and as visible/editable block attributes.
 
 > AS4CAD covers the **Synthesis** side of the AS4QGIS suite (point data → classified drawing). `AS4TAGFROMLAYER` additionally covers the same ground as AS4QGIS's **Psyche** - adding the same attribute structure to pre-existing line/polygon geometry - though it derives the ID/code from the object's layer name rather than a point measurement.
+>
+> `AS4TABLE` goes one step beyond: it links the excavation database's table (a CSV) to the drawing's layers, so layers can be filtered, colored and renamed by what the table says about them.
 
 ---
 
@@ -124,6 +126,8 @@ Alternatively, place `(load "path/to/AS4CAD.lsp")` in an `on_start.lsp` (once pe
 
 AS4CAD uses only standard AutoLISP and core Visual LISP functions - no ActiveX/COM (`vlax-`/`vla-`), no Express Tools, no DCL dialogs - and creates geometry through plain DXF group codes only. It should run on AutoCAD 2004 and newer (true color and lineweight support), and on any reasonably current BricsCAD version, on Windows and macOS alike. It has not been tested across the full version range; if you rely on a specific older version, verify there first.
 
+`AS4TABLE`'s Isolate step uses the built-in `ISOLATEOBJECTS` / `UNISOLATEOBJECTS` commands; where they do not exist it switches the other layers off instead.
+
 ---
 
 ## Quick start
@@ -135,12 +139,25 @@ AS4CAD uses only standard AutoLISP and core Visual LISP functions - no ActiveX/C
 5. Review the command-line summary (features imported per shape type, skipped/invalid lines, split shpcontainers, feature layer count).
 6. Use `AS4ZOOM`/`AS4SELECTXDATA` any time afterward to jump straight to a feature by its ID or code, or `AS4SELECTLAYER` by layer name.
 7. Optionally, run `AS4XPORT` at any point to export the data back out for QGIS or any other GIS tool.
+8. Optionally, run `AS4TABLE` to link your excavation database's table (CSV) to the layers - see [`AS4TABLE`](#as4table).
 
 ---
 
 ## Commands
 
 Run `AS4INFO` at any time for a command-line reference of every command below: it lists them all with a letter, then prints a short usage/effect description for whichever letter you type.
+
+| Command | What it does |
+|---|---|
+| [`AS4IMPORT`](#as4import) | reads an ArchSurv text file and builds the classified drawing |
+| [`AS4SETTINGS`](#as4settings) | layer structure, symbols, text, vector styles, export defaults |
+| [`AS4STATUS`](#as4status) | prints the version and all current settings |
+| [`AS4XPORT`](#as4xport) | exports point symbols (CSV) or points and lines/polygons (GeoJSON) |
+| [`AS4TAGFROMLAYER`](#as4tagfromlayer) | tags lines drawn by hand with AS4QGIS attributes, read from the layer name |
+| [`AS4ZOOM` / `AS4SELECTXDATA` / `AS4SELECTLAYER`](#as4zoom--as4selectxdata--as4selectlayer) | find objects by ID, code or layer name; type, click or press Enter |
+| [`AS4TABLE`](#as4table) | links a table (CSV) to the layers: filter, color, rename, look up |
+| [`AS4NET`](#as4net) | reference survey grid and coordinate labels |
+| `AS4INFO` | lists all commands with a short description |
 
 ### `AS4IMPORT`
 
@@ -295,6 +312,93 @@ Locate objects two different ways: by feature ID/code, or by layer name.
 | `AS4ZOOM` | zooms to everything with its ID (code, or layer if it has neither) | zooms to the current layer |
 
 A space ends typed input at this prompt, so use `?` instead of a space in a layer name (e.g. `Layer?1`). `AS4ZOOM` and the typed input are otherwise unchanged: a term containing `*` or `?` is matched as a layer pattern, anything else as ID/code criteria. `AS4ZOOM` only zooms; `AS4SELECTXDATA`/`AS4SELECTLAYER` also select what they find.
+
+### `AS4TABLE`
+
+Links an external table - typically a CSV exported from the excavation database - to the layers of the drawing, and lets you work with both together: filter the layers by any column, color them from a color column, rename them from the table, or look up the table row of any object.
+
+The table is **not imported into the drawing**. AS4TABLE only remembers where the file is and reads it again every time a step runs, so overwriting the CSV with a newer export updates everything at once. AS4TABLE never writes into your CSV.
+
+Save the drawing at least once before using it - the links are stored next to the drawing file.
+
+#### How layers and table rows find each other
+
+Both sides need a common **key** - normally the feature number. AS4TABLE reads it out of the layer name with a **layer name template**:
+
+| Template | Layer name | Key |
+|---|---|---|
+| `ID_ID_*_*` | `202616_1_Vf_RZ` | `202616_1` |
+| `*_ID_*_*` | `202616_1_Vf_RZ` | `1` |
+| `-` (the whole name is the key) | `4` | `4` |
+
+- The name is split at the separator found in the template (`_`, `-`, `.`, `/`, space, `|`, `:` or `;`).
+- `ID` marks a part of the key; several `ID` parts are joined to one key (`202616` + `1`). `*` is any part. Any other text must be present in the layer name (wildcards allowed).
+- The layer must have exactly as many parts as the template.
+- Upper/lower case is ignored, and so are leading zeros: `04` equals `4`.
+- Layers named `0` or `Defpoints` are never matched to a table row, and Rename never touches them.
+
+The key column of the table is used as it is. If its values are built differently (for example `202616/1`), give it its own **table template** in the same syntax, so that it yields the same key. When the layer template also fits the first value of the key column, Link suggests it as the table template.
+
+#### The menu
+
+```
+AS4CAD table [Link/Report/Columns/Filter/RGB-via-column/Name/Info/Back/Unlink/eXit] <eXit>:
+```
+
+Type the first letter (`L`, `R`, `C`, `F`, `G`, `N`, `I`, `B`, `U`, `X`), as often as needed, in any order. Several tables can be linked at the same time; steps that work with one table ask which one.
+
+**Link** - pick the table (`.csv`, `.txt`, `.tsv`), name the key column and give the layer name template (and, if needed, the table template). The delimiter (tab, semicolon, comma, pipe), quoted cells (also across several lines) and UTF-8 files are recognized automatically. Characters beyond Latin-1 (for example Turkish letters) are shown as `\U+XXXX`, which CAD displays as the real character in text. Key column and templates are remembered for the next Link, also after Unlink. A short report follows right away.
+
+**Report** - shows how well layers and rows match: layers with a row, layers without, rows without a layer, duplicate keys. Optionally writes the pairing as `as4cad_tablereport.csv`.
+
+**Columns** - lists every column that holds data: number, name, filled rows, type (`number`, `category`, `text`, `color`, or `relation` if the cells list keys of other rows) and example values. The numbers are what Filter and Name refer to.
+
+**Filter** - narrows the layers down column by column. Each criterion depends on the column's type:
+
+| Column type | Question | Matches |
+|---|---|---|
+| `category` | numbers of the values, `*` = any value, `-` = empty | rows whose cell has one of the chosen values |
+| `number` | `min,max` (either may stay empty) | rows within the range |
+| `text` | words, comma-separated | rows whose cell contains any of the words |
+
+After each criterion the list of criteria so far and the number of matching rows and layers is shown. Add another criterion to narrow the result further (all criteria must match), or press Enter to finish. Then:
+
+- **Select** - selects the objects on the matching layers and zooms to them.
+- **Zoom** - only zooms.
+- **Isolate** - runs the program's own `ISOLATEOBJECTS` on the objects of the matching layers; everything else in the current space is hidden. `UNISOLATEOBJECTS` (or **Back**) shows it again, also after leaving `AS4TABLE`. Matching layers that are switched off are switched on first.
+- **Offlayers** - switches every other layer off instead (for work in the Layer Properties Manager); **Back** restores them.
+
+**RGB-via-column** - lists the columns whose cells all hold colors (`r,g,b`, `RGB(r,g,b)`, `#RRGGBB` or `0xRRGGBB`), lets you pick one, and colors each layer with the color of its row. An empty cell colors the layer white. To color by hand, use Filter > Isolate and the Layer Properties Manager.
+
+**Name** - renames layers from the table.
+- *Rename:* the columns are listed first. Describe the new name as parts joined with a separator: a number is a table column, `L1`, `L2`, ... are the parts of the old layer name, `*text*` is fixed text. Examples: `7` (value of column 7), `L1_L2_9`, `*test*_2_6`. Enter takes the key column. You get a preview of all renames and merges and confirm it before anything changes.
+- Layers that would get the same name are **merged**: their objects are moved into one layer and the emptied layers are deleted.
+- The **link follows the rename**: its layer template is adapted to the new names, so the table keeps working. If that is not possible you are told in the preview.
+- Every run writes a log (`as4cad_layerrename_<timestamp>.csv`).
+- *reVert:* pick a log, check the preview and confirm - the layers get their old names back, and the link its old settings. Merges cannot be reverted.
+
+**Info** - click an object, press Enter (current layer) or type a key: shows the table row (all filled columns) and the layers that belong to it, with their object counts. A typed key also selects and zooms to those layers.
+
+**Back** - undoes what Isolate, Offlayers and RGB-via-column changed: shows hidden objects, restores layer colors and visibility and the current layer.
+
+**Unlink** - removes a link. The table file stays untouched.
+
+#### Files next to the drawing
+
+| File | Content |
+|---|---|
+| `as4cad_tables.dat` | the links (table path - relative to the drawing if possible -, key column, templates) |
+| `as4cad_tabledefaults.dat` | the last key column and templates (also once in your home directory as `.as4cad_tabledefaults.dat`) |
+| `as4cad_tablestate.dat` | the original layer colors and visibility while a step has changed them; removed by Back |
+| `as4cad_tablereport.csv` | the Report export |
+| `as4cad_layerrename_<timestamp>.csv` | the log of a rename, read by reVert |
+
+#### Good to know
+
+- Layer renames and merges are done with the CAD's own `-RENAME` and `-PURGE`. A merge changes the drawing for good; **reVert** brings back renamed layers, not merged ones - save a copy first when you are unsure.
+- AutoLISP cannot select layers in the Layer Properties Manager. Isolate and Offlayers are the replacement.
+- Frozen layers are not switched on by Isolate.
+- `AS4TABLE` is new in 1.3.7 and has only been tested on one project's data so far. Feedback and sample tables are welcome.
 
 ### `AS4NET`
 
